@@ -1,5 +1,7 @@
 use crate::prompt::NcaPrompt;
 use crate::runner::SessionRuntime;
+use crate::slash_commands::SLASH_COMMANDS;
+use crate::tui::{run_blocking, spawn_tui_bridge, DisplayBlock, TuiCmd, TuiSessionState};
 use nca_common::config::PermissionMode;
 use nca_common::event::EndReason;
 use nca_core::skills::SkillCatalog;
@@ -7,15 +9,64 @@ use nca_runtime::memory_store::MemoryStore;
 use reedline::{Completer, Suggestion, Emacs, Vi, Reedline, Signal, FileBackedHistory};
 use std::io::Write;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use tokio::process::Command;
 
-/// Built-in REPL commands for tab-completion
-const REPL_COMMANDS: &[&str] = &[
-    "/help", "/status", "/agent", "/plan", "/review", "/fix", "/test", "/skills", "/memory",
-    "/compact", "/models", "/mcp", "/agents", "/logs", "/attach", "/config",
-    "/doctor", "/model", "/permissions", "/sessions", "/exit", "/quit", "/q",
-    "/clear", "/undo", "/redo", "/diff", "/cost", "/stats",
-];
+/// Where slash-command and preset output goes (TTY transcript vs full-screen TUI).
+pub(crate) enum ReplOutput<'a> {
+    Stdio,
+    Tui(&'a Arc<Mutex<TuiSessionState>>),
+}
+
+impl ReplOutput<'_> {
+    fn print(&self, s: &str) {
+        match self {
+            ReplOutput::Stdio => {
+                print!("{s}");
+                let _ = std::io::stdout().flush();
+            }
+            ReplOutput::Tui(st) => {
+                if let Ok(mut g) = st.lock() {
+                    for line in s.split('\n') {
+                        g.blocks.push(DisplayBlock::System(line.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    fn println(&self, s: &str) {
+        self.print(&format!("{s}\n"));
+    }
+
+    fn eprintln(&self, s: &str) {
+        match self {
+            ReplOutput::Stdio => eprintln!("{s}"),
+            ReplOutput::Tui(st) => {
+                if let Ok(mut g) = st.lock() {
+                    g.blocks
+                        .push(DisplayBlock::System(format!("[!] {s}")));
+                }
+            }
+        }
+    }
+
+    fn clear_screen(&self) {
+        match self {
+            ReplOutput::Stdio => {
+                print!("\x1B[2J\x1B[H");
+                std::io::stdout().flush().ok();
+            }
+            ReplOutput::Tui(st) => {
+                if let Ok(mut g) = st.lock() {
+                    g.blocks.clear();
+                    g.streaming_assistant = None;
+                    g.scroll_lines = 0;
+                }
+            }
+        }
+    }
+}
 
 /// Special input prefixes
 const INPUT_PREFIXES: &[&str] = &[
@@ -183,7 +234,7 @@ impl Repl {
 
                     // Slash commands
                     if input.starts_with('/') {
-                        if !self.handle_command(&input).await? {
+                        if !self.handle_command(&input, ReplOutput::Stdio).await? {
                             break;
                         }
                         continue;
@@ -420,7 +471,7 @@ impl Repl {
         Ok(builder)
     }
 
-    async fn handle_command(&mut self, input: &str) -> anyhow::Result<bool> {
+    async fn handle_command(&mut self, input: &str, out: ReplOutput<'_>) -> anyhow::Result<bool> {
         let mut parts = input.split_whitespace();
         let command = parts.next().unwrap_or_default();
         let rest = input
@@ -431,7 +482,7 @@ impl Repl {
         match command {
             "/q" | "/quit" | "/exit" => return Ok(false),
             "/help" => {
-                print!(
+                out.print(
                     "nca Interactive Mode - Claude Code inspired shortcuts:\n\n\
                      INPUT MODES:\n\
                        ! <cmd>     Run shell command directly (output feeds back to context)\n\
@@ -469,12 +520,12 @@ impl Repl {
                        Ctrl+D                     Exit repl\n\
                        Ctrl+C                     Cancel current request\n\
                        Ctrl+L                     Clear screen\n\
-                       Ctrl+R                     Search command history\n"
+                       Ctrl+R                     Search command history\n",
                 );
             }
             "/status" => {
                 let snapshot = self.runtime.snapshot();
-                println!(
+                out.println(&format!(
                     "session={} model={} agent={} permission_mode={:?} children={} memory={}",
                     snapshot.id,
                     self.runtime.model(),
@@ -482,9 +533,9 @@ impl Repl {
                     self.runtime.permission_mode(),
                     snapshot.child_session_ids.len(),
                     self.runtime.memory_store_path().display()
-                );
+                ));
                 if let Some(summary) = snapshot.session_summary {
-                    println!("summary: {}", summary.replace('\n', " "));
+                    out.println(&format!("summary: {}", summary.replace('\n', " ")));
                 }
             }
             "/agent" => {
@@ -499,66 +550,94 @@ impl Repl {
                         self.prompt.set_agent(&self.current_agent_label);
                         if *profile == AgentProfile::Plan {
                             self.runtime.set_permission_mode(PermissionMode::Plan);
+                        } else {
+                            self.runtime.set_permission_mode(PermissionMode::Default);
                         }
-                        println!("Switched to @{} mode", profile.label());
+                        if let ReplOutput::Tui(st) = &out {
+                            if let Ok(mut g) = st.lock() {
+                                g.set_agent_profile(&self.current_agent_label);
+                                g.set_permission_mode(&format!(
+                                    "{:?}",
+                                    self.runtime.permission_mode()
+                                ));
+                            }
+                        }
+                        out.println(&format!("Switched to @{} mode", profile.label()));
                     } else {
-                        println!("Unknown agent profile: {}", target);
-                        println!("Available: {}", AgentProfile::ALL.iter().map(|p| p.label()).collect::<Vec<_>>().join(", "));
+                        out.println(&format!("Unknown agent profile: {}", target));
+                        out.println(&format!(
+                            "Available: {}",
+                            AgentProfile::ALL
+                                .iter()
+                                .map(|p| p.label())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
                     }
                 } else {
-                    println!("Current agent: @{}", self.agent_profile.label());
-                    println!("Available profiles:");
+                    out.println(&format!("Current agent: @{}", self.agent_profile.label()));
+                    out.println("Available profiles:");
                     for profile in AgentProfile::ALL {
                         let marker = if profile == self.agent_profile { " *" } else { "" };
-                        println!("  @{}{}", profile.label(), marker);
+                        out.println(&format!("  @{}{}", profile.label(), marker));
                     }
                 }
             }
-            "/plan" => self
-                .run_preset(
+            "/plan" => {
+                self.run_preset(
                     "Create a short implementation plan before coding. Focus on steps, risks, and validation.\n\nTask:\n",
                     rest,
+                    out,
                 )
-                .await?,
-            "/review" => self
-                .run_preset(
+                .await?
+            }
+            "/review" => {
+                self.run_preset(
                     "Review the requested code or changes. Prioritize bugs, regressions, risks, and missing tests.\n\nReview target:\n",
                     rest,
+                    out,
                 )
-                .await?,
-            "/fix" => self
-                .run_preset(
+                .await?
+            }
+            "/fix" => {
+                self.run_preset(
                     "Diagnose and fix the issue below. Prefer a minimal verified change.\n\nIssue:\n",
                     rest,
+                    out,
                 )
-                .await?,
-            "/test" => self
-                .run_preset(
+                .await?
+            }
+            "/test" => {
+                self.run_preset(
                     "Validate the requested area. Run tests or checks if tools allow, and report what passed or failed.\n\nTarget:\n",
                     rest,
+                    out,
                 )
-                .await?,
+                .await?
+            }
             "/model" => {
                 if let Some(model) = parts.next() {
                     let resolved = self.runtime.config().model.resolve_alias(model);
                     self.runtime.set_model(resolved.clone());
-                    println!("model set to {resolved}");
+                    if let ReplOutput::Tui(st) = out {
+                        if let Ok(mut g) = st.lock() {
+                            g.model = resolved.clone();
+                        }
+                    }
+                    out.println(&format!("model set to {resolved}"));
                 } else {
-                    println!("model: {}", self.runtime.model());
+                    out.println(&format!("model: {}", self.runtime.model()));
                 }
             }
             "/clear" => {
-                print!("\x1B[2J\x1B[H");
-                std::io::stdout().flush().ok();
-                println!("[screen cleared]");
+                out.clear_screen();
+                out.println("[screen cleared]");
             }
             "/undo" => {
-                // Undo last agent response - would need runtime support
-                eprintln!("[undo] Not yet implemented - use /compact to save session state");
+                out.eprintln("[undo] Not yet implemented - use /compact to save session state");
             }
             "/redo" => {
-                // Redo undone response - would need runtime support
-                eprintln!("[redo] Not yet implemented");
+                out.eprintln("[redo] Not yet implemented");
             }
             "/diff" => {
                 // Show recent file changes via git
@@ -570,43 +649,60 @@ impl Repl {
                     .output()
                     .await;
                 match output {
-                    Ok(out) => {
-                        let diff = String::from_utf8_lossy(&out.stdout);
+                    Ok(cmd_out) => {
+                        let diff = String::from_utf8_lossy(&cmd_out.stdout);
                         if diff.is_empty() {
-                            println!("[diff] No recent changes");
+                            out.println("[diff] No recent changes");
                         } else {
-                            print!("{diff}");
+                            out.print(&diff);
                         }
                     }
-                    Err(e) => eprintln!("[diff] Failed: {e}"),
+                    Err(e) => out.eprintln(&format!("[diff] Failed: {e}")),
                 }
             }
             "/cost" => {
                 let snapshot = self.runtime.snapshot();
-                eprintln!("[cost] Session: {}", snapshot.id);
-                eprintln!("[cost] Use 'nca logs --follow' to see real-time token usage");
+                out.eprintln(&format!("[cost] Session: {}", snapshot.id));
+                out.eprintln("[cost] Use 'nca logs --follow' to see real-time token usage");
             }
             "/stats" => {
                 let snapshot = self.runtime.snapshot();
-                println!("session_id: {}", snapshot.id);
-                println!("model: {}", self.runtime.model());
-                println!("agent: @{}", self.agent_profile.label());
-                println!("permission_mode: {:?}", self.runtime.permission_mode());
-                println!("child_sessions: {}", snapshot.child_session_ids.len());
-                println!("memory_path: {}", self.runtime.memory_store_path().display());
+                out.println(&format!("session_id: {}", snapshot.id));
+                out.println(&format!("model: {}", self.runtime.model()));
+                out.println(&format!("agent: @{}", self.agent_profile.label()));
+                out.println(&format!(
+                    "permission_mode: {:?}",
+                    self.runtime.permission_mode()
+                ));
+                out.println(&format!(
+                    "child_sessions: {}",
+                    snapshot.child_session_ids.len()
+                ));
+                out.println(&format!(
+                    "memory_path: {}",
+                    self.runtime.memory_store_path().display()
+                ));
             }
             "/permissions" => {
                 if let Some(mode) = parts.next() {
                     if let Some(parsed_mode) = parse_permission_mode(mode) {
                         self.runtime.set_permission_mode(parsed_mode);
-                        println!("permission mode set to {parsed_mode:?}");
+                        if let ReplOutput::Tui(st) = out {
+                            if let Ok(mut g) = st.lock() {
+                                g.permission_mode = format!("{parsed_mode:?}");
+                            }
+                        }
+                        out.println(&format!("permission mode set to {parsed_mode:?}"));
                     } else {
-                        println!(
-                            "invalid mode; expected one of: default, plan, accept-edits, dont-ask, bypass-permissions"
+                        out.println(
+                            "invalid mode; expected one of: default, plan, accept-edits, dont-ask, bypass-permissions",
                         );
                     }
                 } else {
-                    println!("permission_mode: {:?}", self.runtime.permission_mode());
+                    out.println(&format!(
+                        "permission_mode: {:?}",
+                        self.runtime.permission_mode()
+                    ));
                 }
             }
             "/skills" => {
@@ -616,27 +712,27 @@ impl Repl {
                 )
                 .map_err(anyhow::Error::msg)?;
                 if skills.is_empty() {
-                    println!("no skills discovered");
+                    out.println("no skills discovered");
                 } else {
                     for skill in skills {
-                        println!("{}", skill.summary_line());
+                        out.println(&skill.summary_line());
                     }
                 }
             }
             "/memory" => {
                 if rest.is_empty() {
                     let store = MemoryStore::new(self.runtime.memory_store_path());
-                    let state = store.load().await.map_err(anyhow::Error::msg)?;
-                    if state.notes.is_empty() {
-                        println!("no memory notes stored");
+                    let mem = store.load().await.map_err(anyhow::Error::msg)?;
+                    if mem.notes.is_empty() {
+                        out.println("no memory notes stored");
                     } else {
-                        for note in state.notes.iter().rev().take(5) {
-                            println!(
+                        for note in mem.notes.iter().rev().take(5) {
+                            out.println(&format!(
                                 "{} {} {}",
                                 note.id,
                                 note.kind,
                                 note.content.replace('\n', " ")
-                            );
+                            ));
                         }
                     }
                 } else {
@@ -644,7 +740,7 @@ impl Repl {
                         .append_memory_note("note", Some(rest.to_string()))
                         .await
                         .map_err(anyhow::Error::msg)?;
-                    println!("memory note saved");
+                    out.println("memory note saved");
                 }
             }
             "/compact" => {
@@ -655,64 +751,71 @@ impl Repl {
                     .await
                     .map_err(anyhow::Error::msg)?;
                 self.runtime.save().await.map_err(anyhow::Error::msg)?;
-                println!("saved session summary:\n{}", summary);
+                out.println(&format!("saved session summary:\n{}", summary));
             }
             "/models" => {
                 let provider = self.runtime.config().provider.default;
-                println!(
+                out.println(&format!(
                     "default_provider={} default_model={} thinking={} budget={}",
                     provider.display_name(),
                     self.runtime.config().model.default_model,
                     self.runtime.config().model.enable_thinking,
                     self.runtime.config().model.thinking_budget
-                );
+                ));
                 for provider in nca_common::config::ProviderKind::ALL {
-                    println!(
+                    out.println(&format!(
                         "  {} -> {} ({})",
                         provider.display_name(),
                         self.runtime.config().provider.model_for(provider),
                         self.runtime.config().provider.base_url_for(provider)
-                    );
+                    ));
                 }
                 for (alias, target) in &self.runtime.config().model.aliases {
-                    println!("  {alias} -> {target}");
+                    out.println(&format!("  {alias} -> {target}"));
                 }
             }
             "/mcp" => {
                 if self.runtime.config().mcp.servers.is_empty() {
-                    println!("no MCP servers configured");
+                    out.println("no MCP servers configured");
                 } else {
-                    for server in self.runtime.config().mcp.servers.iter().filter(|server| server.enabled) {
-                        println!(
+                    for server in self
+                        .runtime
+                        .config()
+                        .mcp
+                        .servers
+                        .iter()
+                        .filter(|server| server.enabled)
+                    {
+                        out.println(&format!(
                             "{} command={} {}",
                             server.name,
                             server.command,
                             server.args.join(" ")
-                        );
+                        ));
                     }
                 }
             }
             "/agents" => {
                 let snapshot = self.runtime.snapshot();
                 if snapshot.child_session_ids.is_empty() {
-                    println!("no child sessions yet");
+                    out.println("no child sessions yet");
                 } else {
                     for child in snapshot.child_session_ids {
-                        println!("{child}");
+                        out.println(&child);
                     }
                 }
             }
             "/logs" => {
                 match tokio::fs::read_to_string(self.runtime.event_log_path()).await {
-                    Ok(data) => print!("{data}"),
+                    Ok(data) => out.print(&data),
                     Err(err) => {
-                        eprintln!("failed to read log: {err}")
+                        out.eprintln(&format!("failed to read log: {err}"))
                     }
                 }
             }
             "/attach" => {
                 let snapshot = self.runtime.snapshot();
-                println!(
+                out.println(&format!(
                     "session={} socket={}",
                     snapshot.id,
                     snapshot
@@ -720,17 +823,17 @@ impl Repl {
                         .as_ref()
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "<none>".into())
-                );
+                ));
             }
             "/config" => {
                 let config = self.runtime.config();
-                println!(
+                out.println(&format!(
                     "provider={:?} model={} permission_mode={:?} memory={}",
                     config.provider.default,
                     self.runtime.model(),
                     self.runtime.permission_mode(),
                     self.runtime.memory_store_path().display()
-                );
+                ));
             }
             "/doctor" => {
                 for provider in nca_common::config::ProviderKind::ALL {
@@ -739,7 +842,7 @@ impl Repl {
                         .config()
                         .provider
                         .api_key_present_for(provider);
-                    println!(
+                    out.println(&format!(
                         "{}{} API key {} ({})",
                         provider.display_name(),
                         if provider == self.runtime.config().provider.default {
@@ -749,55 +852,70 @@ impl Repl {
                         },
                         if configured { "configured" } else { "missing" },
                         self.runtime.config().provider.api_key_env_for(provider)
-                    );
+                    ));
                 }
             }
             "/sessions" => match self.runtime.list_session_ids().await {
                 Ok(mut ids) => {
                     ids.sort();
                     if ids.is_empty() {
-                        println!("no saved sessions");
+                        out.println("no saved sessions");
                     } else {
                         for id in ids {
-                            println!("{id}");
+                            out.println(&id);
                         }
                     }
                 }
                 Err(error) => {
-                    eprintln!("failed to list sessions: {error}");
+                    out.eprintln(&format!("failed to list sessions: {error}"));
                 }
             },
             _ => {
                 if command.starts_with('/') {
-                    if self.try_run_skill(command.trim_start_matches('/'), rest).await? {
+                    if self
+                        .try_run_skill(command.trim_start_matches('/'), rest, &out)
+                        .await?
+                    {
                         return Ok(true);
                     }
                 }
-                eprintln!("unknown command: {command}");
+                out.eprintln(&format!("unknown command: {command}"));
             }
         }
 
         Ok(true)
     }
 
-    async fn run_preset(&mut self, prefix: &str, task: &str) -> anyhow::Result<()> {
+    async fn run_preset(
+        &mut self,
+        prefix: &str,
+        task: &str,
+        out: ReplOutput<'_>,
+    ) -> anyhow::Result<()> {
         if task.trim().is_empty() {
-            println!("usage: /<command> <task description>");
+            out.println("usage: /<command> <task description>");
             return Ok(());
         }
         let prompt = format!("{prefix}{}", task.trim());
         match self.runtime.run_turn(&prompt).await {
             Ok(output) => {
-                println!("{output}");
+                if matches!(out, ReplOutput::Stdio) {
+                    out.println(&output);
+                }
             }
             Err(err) => {
-                eprintln!("error: {err}");
+                out.eprintln(&format!("error: {err}"));
             }
         }
         Ok(())
     }
 
-    async fn try_run_skill(&mut self, skill_name: &str, task: &str) -> anyhow::Result<bool> {
+    async fn try_run_skill(
+        &mut self,
+        skill_name: &str,
+        task: &str,
+        out: &ReplOutput<'_>,
+    ) -> anyhow::Result<bool> {
         let skills = SkillCatalog::discover(
             self.runtime.workspace_root(),
             &self.runtime.config().harness.skill_directories,
@@ -818,13 +936,205 @@ impl Repl {
         let prompt = skill.prompt_for_task(task);
         match self.runtime.run_turn(&prompt).await {
             Ok(output) => {
-                println!("{output}");
+                if matches!(out, ReplOutput::Stdio) {
+                    out.println(&output);
+                }
             }
             Err(err) => {
-                eprintln!("error: {err}");
+                out.eprintln(&format!("error: {err}"));
             }
         }
         Ok(true)
+    }
+
+    /// Full-screen TUI: transcript + streaming + composer (default on TTY).
+    pub async fn run_with_tui(&mut self) -> anyhow::Result<()> {
+        let session_id = self.runtime.session_id().to_string();
+        let model = self.runtime.model().to_string();
+        let perm = format!("{:?}", self.runtime.permission_mode());
+        let tui_state: Arc<Mutex<TuiSessionState>> = Arc::new(Mutex::new(TuiSessionState::new(
+            session_id,
+            model,
+            self.current_agent_label.clone(),
+            perm,
+        )));
+
+        let rx = self
+            .runtime
+            .take_event_rx()
+            .ok_or_else(|| anyhow::anyhow!("internal: event channel already taken"))?;
+        let log_path = self.runtime.event_log_path();
+        let ipc = self.runtime.take_ipc_handle();
+        let approval = self.runtime.take_ipc_approval_pending();
+        let _bridge = spawn_tui_bridge(rx, log_path, ipc, approval, tui_state.clone());
+
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TuiCmd>();
+        let st = tui_state.clone();
+        let banner = self.run_mode;
+        let ui = tokio::task::spawn_blocking(move || run_blocking(st, cmd_tx, banner));
+
+        loop {
+            let cmd = cmd_rx.recv().await;
+            let Some(cmd) = cmd else { break };
+            match cmd {
+                TuiCmd::Exit => {
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.should_exit = true;
+                    }
+                    break;
+                }
+                TuiCmd::CycleAgent => {
+                    let next = self.agent_profile.next();
+                    self.agent_profile = next;
+                    self.current_agent_label = format!("@{}", next.label());
+                    if next == AgentProfile::Plan {
+                        self.runtime.set_permission_mode(PermissionMode::Plan);
+                    } else {
+                        self.runtime.set_permission_mode(PermissionMode::Default);
+                    }
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.set_agent_profile(&self.current_agent_label);
+                        g.set_permission_mode(&format!("{:?}", self.runtime.permission_mode()));
+                    }
+                }
+                TuiCmd::CancelTurn => {
+                    self.runtime.request_cancel();
+                }
+                TuiCmd::Submit(line) => {
+                    let line = line.trim().to_string();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if line.starts_with('!') {
+                        let shell_cmd = line.trim_start_matches('!').trim();
+                        self.run_bash_tui(shell_cmd, &tui_state).await;
+                        continue;
+                    }
+                    if line.starts_with('@') {
+                        let q = line.trim_start_matches('@');
+                        self.file_ref_tui(q, &tui_state).await;
+                        continue;
+                    }
+                    if line.starts_with('/') {
+                        if !self
+                            .handle_command(&line, ReplOutput::Tui(&tui_state))
+                            .await?
+                        {
+                            if let Ok(mut g) = tui_state.lock() {
+                                g.should_exit = true;
+                            }
+                            break;
+                        }
+                        continue;
+                    }
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.set_busy(true);
+                    }
+                    if let Err(e) = self.runtime.run_turn(&line).await {
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.push_error(e.to_string());
+                        }
+                    }
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.set_busy(false);
+                    }
+                }
+            }
+        }
+
+        let _ = ui.await;
+        self.runtime.finish(EndReason::UserExit).await;
+        Ok(())
+    }
+
+    async fn run_bash_tui(&self, cmd: &str, st: &Arc<Mutex<TuiSessionState>>) {
+        fn log(st: &Arc<Mutex<TuiSessionState>>, s: &str) {
+            if let Ok(mut g) = st.lock() {
+                g.blocks.push(DisplayBlock::System(s.to_string()));
+            }
+        }
+        if cmd.is_empty() {
+            log(st, "! usage: !<command>");
+            return;
+        }
+        log(st, &format!("[bash] {cmd}"));
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if !stdout.is_empty() {
+                    if let Ok(mut g) = st.lock() {
+                        for line in stdout.lines() {
+                            g.blocks.push(DisplayBlock::System(line.to_string()));
+                        }
+                    }
+                }
+                if !stderr.is_empty() {
+                    log(st, &format!("[stderr] {stderr}"));
+                }
+                log(
+                    st,
+                    &if out.status.success() {
+                        "[bash] exit 0".into()
+                    } else {
+                        format!("[bash] exit {}", out.status.code().unwrap_or(-1))
+                    },
+                );
+            }
+            Err(e) => log(st, &format!("[bash] {e}")),
+        }
+    }
+
+    async fn file_ref_tui(&self, query: &str, st: &Arc<Mutex<TuiSessionState>>) {
+        fn log(st: &Arc<Mutex<TuiSessionState>>, s: &str) {
+            if let Ok(mut g) = st.lock() {
+                g.blocks.push(DisplayBlock::System(s.to_string()));
+            }
+        }
+        let query = query.trim();
+        let workspace = self.runtime.workspace_root();
+        log(st, &format!("[file] search: {query}"));
+        let find_cmd = if query.is_empty() {
+            "find . -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.toml' \\) 2>/dev/null | head -20"
+                .to_string()
+        } else {
+            let escaped =
+                query.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "\\");
+            format!(
+                "find . -type f \\( -name '*{escaped}*' -o -path '*{escaped}*' \\) 2>/dev/null | head -20"
+            )
+        };
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(&find_cmd)
+            .current_dir(workspace)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+        match output {
+            Ok(out) => {
+                let files = String::from_utf8_lossy(&out.stdout);
+                if files.trim().is_empty() {
+                    log(st, "[file] no matches");
+                } else {
+                    for (i, line) in files.lines().enumerate() {
+                        if !line.is_empty() {
+                            log(st, &format!("  {}: {}", i + 1, line));
+                        }
+                    }
+                    log(st, "[file] reference with @<path> in your next message");
+                }
+            }
+            Err(e) => log(st, &format!("[file] {e}")),
+        }
     }
 }
 
@@ -835,7 +1145,7 @@ impl Completer for Repl {
 
         // Complete REPL commands starting with /
         if line.starts_with('/') {
-            for cmd in REPL_COMMANDS {
+            for cmd in SLASH_COMMANDS {
                 if cmd.starts_with(line) {
                     suggestions.push(Suggestion {
                         value: cmd.to_string(),
