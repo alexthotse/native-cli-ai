@@ -40,8 +40,10 @@ cp target/release/nca-monitor /usr/local/bin/
 # Configure MiniMax (default provider)
 export MINIMAX_API_KEY="your-api-key"
 
-# Start the interactive CLI
+# Start the interactive CLI (full-screen TUI when stdout+stdin are TTYs and --stream human)
 nca
+# Line-oriented REPL instead: scripts, piped stdin, or tricky tool-approval prompts
+nca --no-tui
 
 # Run a one-shot task
 nca run --prompt "Explain this repository" --stream human

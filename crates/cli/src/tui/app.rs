@@ -1,13 +1,18 @@
-//! Beautiful TUI application for nca
-//! 
-//! A Claude Code-inspired terminal UI with scrollable messages,
-//! syntax highlighting, and a clean status bar.
+//! Full-screen session TUI: transcript, streaming assistant, composer.
 
+use crate::slash_commands::SLASH_COMMANDS;
+use crate::tui::state::{DisplayBlock, TuiSessionState};
 use crossterm::{
-    event::{Event as CrosstermEvent, KeyCode, KeyModifiers, poll},
+    cursor::{Hide, MoveToColumn, Show},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
+        MouseEventKind, poll, read,
+    },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, Clear, ClearType},
-    cursor::{Hide, Show},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -17,409 +22,649 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
 };
-use std::io::stdout;
+use std::io::{stdout, Stdout};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 
-/// Message types for display
-#[derive(Debug, Clone)]
-pub enum MessageType {
-    User,
-    Assistant,
-    System,
-    Tool,
-    ToolResult,
+#[derive(Debug)]
+pub enum TuiCmd {
+    Submit(String),
+    CycleAgent,
+    CancelTurn,
+    Exit,
 }
 
-/// A single chat message
-#[derive(Debug, Clone)]
-pub struct Message {
-    pub msg_type: MessageType,
-    pub content: String,
-    pub timestamp: Instant,
-    pub model: Option<String>,
-    pub tool_name: Option<String>,
-}
-
-/// Application state
-pub struct App {
-    pub messages: Vec<Message>,
-    pub status: AppStatus,
-    pub input_buffer: String,
-    pub cursor_position: usize,
-    pub scroll_offset: usize,
-    pub is_running: bool,
-    pub session_id: String,
-    pub model: String,
-    pub show_welcome: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct AppStatus {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cost_usd: f64,
-    pub permission_mode: String,
-    pub agent_profile: String,
-    pub elapsed_secs: u64,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            messages: Vec::new(),
-            status: AppStatus {
-                input_tokens: 0,
-                output_tokens: 0,
-                cost_usd: 0.0,
-                permission_mode: "default".into(),
-                agent_profile: "@build".into(),
-                elapsed_secs: 0,
-            },
-            input_buffer: String::new(),
-            cursor_position: 0,
-            scroll_offset: 0,
-            is_running: true,
-            session_id: "".into(),
-            model: "MiniMax-M2.5".into(),
-            show_welcome: true,
-        }
-    }
-}
-
-impl App {
-    pub fn new(session_id: String, model: String) -> Self {
-        Self {
-            session_id,
-            model,
-            ..Default::default()
-        }
-    }
-
-    pub fn add_message(&mut self, msg: Message) {
-        self.messages.push(msg);
-        self.show_welcome = false;
-    }
-
-    pub fn update_status(&mut self, status: AppStatus) {
-        self.status = status;
-    }
-}
-
-// Claude Code-inspired dark theme
 mod theme {
     use ratatui::style::Color;
 
-    pub const BG: Color = Color::Rgb(30, 30, 36);
-    pub const SURFACE: Color = Color::Rgb(40, 40, 48);
-    pub const BORDER: Color = Color::Rgb(60, 60, 72);
-    
-    pub const USER_BG: Color = Color::Rgb(0, 145, 191);
-    pub const ASSISTANT_BG: Color = Color::Rgb(137, 87, 220);
-    pub const TOOL_BG: Color = Color::Rgb(58, 170, 214);
-    
-    pub const TEXT: Color = Color::Rgb(220, 220, 230);
-    pub const TEXT_DIM: Color = Color::Rgb(150, 150, 160);
-    pub const TEXT_BRIGHT: Color = Color::Rgb(255, 255, 255);
-    
-    pub const SUCCESS: Color = Color::Rgb(63, 185, 80);
-    pub const ERROR: Color = Color::Rgb(248, 81, 73);
-    pub const WARNING: Color = Color::Rgb(210, 153, 34);
+    pub const BG: Color = Color::Rgb(22, 22, 28);
+    pub const SURFACE: Color = Color::Rgb(32, 32, 42);
+    pub const BORDER: Color = Color::Rgb(55, 55, 70);
+
+    pub const USER: Color = Color::Rgb(56, 189, 248);
+    pub const ASSISTANT: Color = Color::Rgb(167, 139, 250);
+    pub const TOOL: Color = Color::Rgb(94, 234, 212);
+    pub const MUTED: Color = Color::Rgb(120, 120, 140);
+    pub const TEXT: Color = Color::Rgb(230, 230, 240);
+    pub const SUCCESS: Color = Color::Rgb(74, 222, 128);
+    pub const ERROR: Color = Color::Rgb(248, 113, 113);
+    pub const WARN: Color = Color::Rgb(251, 191, 36);
 }
 
-/// Setup terminal for TUI
-pub fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
-    execute!(stdout(), EnterAlternateScreen)?;
-    execute!(stdout(), Hide)?;
-    execute!(stdout(), Clear(ClearType::All))?;
-    
-    let backend = CrosstermBackend::new(stdout());
-    let terminal = Terminal::new(backend)?;
-    
-    Ok(terminal)
+const SLASH_PANEL_MAX_ROWS: usize = 8;
+const MOUSE_SCROLL_LINES: usize = 3;
+
+fn slash_panel_visible(buffer: &str) -> bool {
+    buffer.starts_with('/') && !buffer.contains(' ')
 }
 
-/// Restore terminal to normal mode
-pub fn restore_terminal() {
-    let _ = execute!(stdout(), Show);
-    let _ = execute!(stdout(), LeaveAlternateScreen);
+fn filter_slash_commands(buffer: &str) -> Vec<&'static str> {
+    if !slash_panel_visible(buffer) {
+        return Vec::new();
+    }
+    SLASH_COMMANDS
+        .iter()
+        .copied()
+        .filter(|c| c.starts_with(buffer))
+        .collect()
 }
 
-/// Main render function
-pub fn render(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &App) -> anyhow::Result<()> {
-    terminal.draw(|frame| {
-        let area = frame.area();
-        
-        let chunks = Layout::default()
+fn slash_panel_height(filtered_len: usize) -> u16 {
+    if filtered_len == 0 {
+        return 0;
+    }
+    let rows = filtered_len.min(SLASH_PANEL_MAX_ROWS);
+    let footer = if filtered_len > SLASH_PANEL_MAX_ROWS { 1 } else { 0 };
+    // borders (2) + command rows + optional footer
+    (rows as u16)
+        .saturating_add(footer)
+        .saturating_add(2)
+        .min(14)
+}
+
+fn layout_chunks(area: Rect, slash_h: u16) -> (Rect, Rect, Option<Rect>, Rect) {
+    if slash_h > 0 {
+        let c = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(1),
-                Constraint::Length(3), // Status bar
-                Constraint::Length(3), // Input area
+                Constraint::Min(4),
+                Constraint::Length(2),
+                Constraint::Length(slash_h),
+                Constraint::Length(3),
             ])
             .split(area);
-
-        render_messages(frame, chunks[0], app);
-        render_status_bar(frame, chunks[1], app);
-        render_input(frame, chunks[2], app);
-    })?;
-    Ok(())
-}
-
-fn render_messages(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let border_style = Style::default().fg(theme::BORDER);
-    
-    if app.show_welcome || app.messages.is_empty() {
-        let welcome = Paragraph::new(
-            Text::from(vec![
-                Line::from(Span::styled("Welcome to ", Style::default().fg(theme::TEXT))),
-                Line::from(Span::styled("nca", Style::default().fg(theme::ASSISTANT_BG).bold())),
-                Line::from(Span::raw("")),
-                Line::from(Span::styled("Type a message to start chatting...", Style::default().fg(theme::TEXT_DIM))),
-                Line::from(Span::raw("")),
-                Line::from(vec![
-                    Span::styled("Tab", Style::default().fg(theme::USER_BG).bold()),
-                    Span::styled(" switch agent ", Style::default().fg(theme::TEXT_DIM)),
-                    Span::styled("!cmd", Style::default().fg(theme::SUCCESS)),
-                    Span::styled(" bash ", Style::default().fg(theme::TEXT_DIM)),
-                    Span::styled("@file", Style::default().fg(theme::WARNING)),
-                    Span::styled(" search ", Style::default().fg(theme::TEXT_DIM)),
-                    Span::styled("/help", Style::default().fg(theme::ASSISTANT_BG)),
-                ]),
+        (c[0], c[1], Some(c[2]), c[3])
+    } else {
+        let c = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(4),
+                Constraint::Length(2),
+                Constraint::Length(3),
             ])
-        )
-        .block(Block::default().borders(Borders::ALL).border_style(border_style))
-        .centered();
-        frame.render_widget(welcome, area);
-        return;
+            .split(area);
+        (c[0], c[1], None, c[2])
     }
-
-    let total = app.messages.len();
-    let start = app.scroll_offset.min(total.saturating_sub(1));
-    let visible = area.height as usize;
-    let end = (start + visible).min(total);
-    
-    if start >= end {
-        return;
-    }
-
-    let visible_messages = &app.messages[start..end];
-    let mut lines: Vec<Line> = Vec::new();
-    
-    for msg in visible_messages {
-        lines.extend(render_message_lines(msg));
-        lines.push(Line::default());
-    }
-
-    let content = Text::from(lines);
-    let list = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).border_style(border_style))
-        .wrap(Wrap { trim: true })
-        .style(Style::default().fg(theme::TEXT));
-
-    frame.render_widget(list, area);
 }
 
-fn render_message_lines(msg: &Message) -> Vec<Line> {
-    let mut lines = Vec::new();
-    
-    let (header_bg, header_text) = match msg.msg_type {
-        MessageType::User => (theme::USER_BG, " YOU "),
-        MessageType::Assistant => (theme::ASSISTANT_BG, " nca "),
-        MessageType::System => (theme::WARNING, " SYSTEM "),
-        MessageType::Tool => {
-            let name = msg.tool_name.as_deref().unwrap_or("TOOL");
-            return vec![
-                Line::from(Span::styled(
-                    format!(" {} ", name.to_uppercase()),
-                    Style::default().bg(theme::TOOL_BG).fg(theme::TEXT_BRIGHT).bold(),
-                )),
-                Line::from(Span::raw("")),
-                Line::from(Span::styled(&msg.content, Style::default().fg(theme::TEXT))),
-            ];
-        }
-        MessageType::ToolResult => (theme::SUCCESS, " RESULT "),
-    };
+fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x && col < r.x.saturating_add(r.width) && row >= r.y && row < r.y.saturating_add(r.height)
+}
 
-    lines.push(Line::from(Span::styled(
-        header_text,
-        Style::default().bg(header_bg).fg(theme::TEXT_BRIGHT).bold(),
-    )));
-    lines.push(Line::default());
+pub fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<Stdout>>> {
+    enable_raw_mode().map_err(|e| anyhow::anyhow!("enable_raw_mode: {e}"))?;
+    let res: anyhow::Result<Terminal<CrosstermBackend<Stdout>>> = (|| {
+        let mut out = stdout();
+        execute!(out, EnterAlternateScreen)?;
+        execute!(out, EnableMouseCapture)?;
+        execute!(out, Hide)?;
+        execute!(out, Clear(ClearType::All))?;
+        Ok(Terminal::new(CrosstermBackend::new(out))?)
+    })();
+    if res.is_err() {
+        let _ = disable_raw_mode();
+    }
+    res
+}
 
-    for line in msg.content.lines() {
-        if line.trim().is_empty() {
-            lines.push(Line::default());
-        } else if line.starts_with("```") {
-            lines.push(Line::from(Span::styled(line, Style::default().fg(theme::TEXT_DIM))));
-        } else {
-            lines.push(parse_inline_formatting(line));
+pub fn restore_terminal() {
+    let mut out = stdout();
+    let _ = execute!(out, Show);
+    let _ = execute!(out, DisableMouseCapture);
+    let _ = execute!(out, LeaveAlternateScreen);
+    let _ = disable_raw_mode();
+}
+
+/// Build scrollable transcript lines (for layout + scroll).
+fn transcript_lines(state: &TuiSessionState, width: u16) -> Vec<Line<'static>> {
+    let w = width.max(20) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    for block in &state.blocks {
+        match block {
+            DisplayBlock::User(content) => {
+                lines.push(Line::from(vec![Span::styled(
+                    " YOU ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(theme::USER)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                lines.push(Line::default());
+                for text_line in wrap_text(content, w) {
+                    lines.push(Line::from(Span::styled(text_line, Style::default().fg(theme::TEXT))));
+                }
+                lines.push(Line::default());
+            }
+            DisplayBlock::Assistant(content) => {
+                lines.push(Line::from(vec![Span::styled(
+                    " nca ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(theme::ASSISTANT)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                lines.push(Line::default());
+                for text_line in wrap_text(content, w) {
+                    lines.push(parse_md_line(&text_line));
+                }
+                lines.push(Line::default());
+            }
+            DisplayBlock::ToolRunning { name, .. } => {
+                lines.push(Line::from(vec![
+                    Span::styled(" ⚡ ", Style::default().fg(theme::TOOL)),
+                    Span::styled(
+                        format!("{name} "),
+                        Style::default()
+                            .fg(theme::TOOL)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("…", Style::default().fg(theme::MUTED)),
+                ]));
+            }
+            DisplayBlock::ToolDone { name, ok, detail } => {
+                let (icon, st) = if *ok {
+                    ("✓", Style::default().fg(theme::SUCCESS))
+                } else {
+                    ("✗", Style::default().fg(theme::ERROR))
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {icon} "), st),
+                    Span::styled(
+                        format!("{name}"),
+                        Style::default().fg(theme::TOOL).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" — {}", truncate_chars(detail, 100)),
+                        Style::default().fg(theme::MUTED),
+                    ),
+                ]));
+            }
+            DisplayBlock::System(s) => {
+                lines.push(Line::from(Span::styled(
+                    format!(" ‣ {s}"),
+                    Style::default().fg(theme::WARN),
+                )));
+            }
+            DisplayBlock::ErrorLine(s) => {
+                lines.push(Line::from(Span::styled(
+                    format!(" ✗ {s}"),
+                    Style::default().fg(theme::ERROR),
+                )));
+            }
         }
     }
-    
+
+    if let Some(stream) = &state.streaming_assistant {
+        if !stream.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(" nca ", Style::default().fg(Color::Black).bg(theme::ASSISTANT)),
+                Span::styled(" streaming", Style::default().fg(theme::MUTED)),
+            ]));
+            lines.push(Line::default());
+            for text_line in wrap_text(stream, w) {
+                lines.push(parse_md_line(&text_line));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("nca", Style::default().fg(theme::ASSISTANT).add_modifier(Modifier::BOLD)),
+            Span::styled(" — session ready", Style::default().fg(theme::MUTED)),
+        ]));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "Tab  agent   !cmd  shell   @path  search   /  commands   wheel  scroll",
+            Style::default().fg(theme::MUTED),
+        )));
+    }
+
     lines
 }
 
-fn parse_inline_formatting(line: &str) -> Line {
-    let mut spans = Vec::new();
-    let mut remaining = line;
-    
-    while !remaining.is_empty() {
-        if let Some(pos) = remaining.find("**") {
-            if pos > 0 {
-                spans.push(Span::raw(&remaining[..pos]));
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+    }
+}
+
+fn wrap_text(s: &str, width: usize) -> Vec<String> {
+    if width < 8 {
+        return vec![s.to_string()];
+    }
+    let mut out = Vec::new();
+    for paragraph in s.split('\n') {
+        if paragraph.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if line.is_empty() {
+                line = word.to_string();
+            } else if line.len() + 1 + word.len() <= width {
+                line.push(' ');
+                line.push_str(word);
+            } else {
+                out.push(line);
+                line = word.to_string();
             }
-            remaining = &remaining[pos + 2..];
-            if let Some(end) = remaining.find("**") {
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+    if out.is_empty() && !s.is_empty() {
+        out.push(s.to_string());
+    }
+    out
+}
+
+fn parse_md_line(line: &str) -> Line<'static> {
+    if line.starts_with("```") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(theme::MUTED),
+        ));
+    }
+    let mut spans: Vec<Span> = Vec::new();
+    let mut rest = line.to_string();
+    while !rest.is_empty() {
+        if let Some(pos) = rest.find("**") {
+            if pos > 0 {
                 spans.push(Span::styled(
-                    &remaining[..end],
-                    Style::default().add_modifier(Modifier::BOLD),
+                    rest[..pos].to_string(),
+                    Style::default().fg(theme::TEXT),
                 ));
-                remaining = &remaining[end + 2..];
+            }
+            rest = rest[pos + 2..].to_string();
+            if let Some(end) = rest.find("**") {
+                spans.push(Span::styled(
+                    rest[..end].to_string(),
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                rest = rest[end + 2..].to_string();
             } else {
                 spans.push(Span::raw("**"));
+                break;
             }
         } else {
-            spans.push(Span::raw(remaining));
+            spans.push(Span::styled(rest, Style::default().fg(theme::TEXT)));
             break;
         }
     }
-    
-    Line::from(spans).style(Style::default().fg(theme::TEXT))
+    Line::from(spans)
 }
 
-fn render_status_bar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let s = &app.status;
-    
-    let status = format!(
-        " {} │ {} │ {} │ {} │ in:{} out:{} │ ${:.4} │ {:02}:{:02} ",
-        app.model,
-        &app.session_id[..8.min(app.session_id.len())],
-        s.agent_profile,
-        s.permission_mode,
-        s.input_tokens,
-        s.output_tokens,
-        s.cost_usd,
-        s.elapsed_secs / 60,
-        s.elapsed_secs % 60,
-    );
+pub fn run_blocking(
+    state: Arc<Mutex<TuiSessionState>>,
+    cmd_tx: UnboundedSender<TuiCmd>,
+    show_run_banner: bool,
+) -> anyhow::Result<()> {
+    let mut terminal = setup_terminal()?;
 
-    let bar = Paragraph::new(Text::styled(status, Style::default().bg(theme::SURFACE).fg(theme::TEXT_DIM)))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::BORDER))
-        );
-
-    frame.render_widget(bar, area);
-}
-
-fn render_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let prompt = Span::styled("❯ ", Style::default().fg(theme::USER_BG).bold());
-    let text = if app.input_buffer.is_empty() {
-        Span::styled("Type a message... (Tab: agent, Ctrl+C: cancel)", Style::default().fg(theme::TEXT_DIM))
-    } else {
-        Span::raw(&app.input_buffer)
-    };
-    
-    let input_style = if app.input_buffer.is_empty() {
-        Style::default().bg(theme::SURFACE).fg(theme::TEXT_DIM)
-    } else {
-        Style::default().bg(theme::SURFACE).fg(theme::TEXT)
-    };
-
-    let input = Paragraph::new(Text::from(Line::from(vec![prompt, text])))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::BORDER))
-        )
-        .style(input_style);
-
-    frame.render_widget(input, area);
-}
-
-/// Run the TUI event loop
-pub async fn run_tui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: Arc<Mutex<App>>) -> anyhow::Result<String> {
-    let mut input = String::new();
-    
-    loop {
-        // Render
-        {
-            let app_lock = app.lock().unwrap();
-            if !app_lock.is_running {
-                break;
-            }
-            render(terminal, &app_lock)?;
-        }
-
-        // Poll for events
-        match poll(std::time::Duration::from_millis(50)) {
-            Ok(true) => {
-                if let Ok(CrosstermEvent::Key(key_event)) = crossterm::event::read() {
-                    let mut app_lock = app.lock().unwrap();
-                    
-                    match (key_event.code, key_event.modifiers) {
-                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                            app_lock.is_running = false;
-                            break;
-                        }
-                        (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
-                            app_lock.messages.clear();
-                            app_lock.show_welcome = true;
-                        }
-                        (KeyCode::Tab, _) => {
-                            let profiles = ["@build", "@plan", "@review", "@fix", "@test"];
-                            let current = &app_lock.status.agent_profile;
-                            if let Some(idx) = profiles.iter().position(|p| *p == current) {
-                                app_lock.status.agent_profile = profiles[(idx + 1) % profiles.len()].to_string();
-                            }
-                        }
-                        (KeyCode::Char(c), _) => {
-                            app_lock.input_buffer.push(c);
-                            app_lock.cursor_position += 1;
-                        }
-                        (KeyCode::Backspace, _) => {
-                            if !app_lock.input_buffer.is_empty() {
-                                app_lock.input_buffer.pop();
-                                app_lock.cursor_position = app_lock.cursor_position.saturating_sub(1);
-                            }
-                        }
-                        (KeyCode::Enter, _) => {
-                            input = app_lock.input_buffer.clone();
-                            if !input.trim().is_empty() {
-                                app_lock.add_message(Message {
-                                    msg_type: MessageType::User,
-                                    content: input.clone(),
-                                    timestamp: Instant::now(),
-                                    model: None,
-                                    tool_name: None,
-                                });
-                            }
-                            app_lock.input_buffer.clear();
-                            app_lock.cursor_position = 0;
-                            drop(app_lock);
-                            break;
-                        }
-                        (KeyCode::Esc, _) => {
-                            app_lock.is_running = false;
-                            break;
-                        }
-                        (KeyCode::Up, _) => {
-                            app_lock.scroll_offset = app_lock.scroll_offset.saturating_sub(1);
-                        }
-                        (KeyCode::Down, _) => {
-                            let max = app_lock.messages.len().saturating_sub(1);
-                            app_lock.scroll_offset = (app_lock.scroll_offset + 1).min(max);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Ok(false) => {}
-            Err(_) => break,
+    if show_run_banner {
+        if let Ok(mut g) = state.lock() {
+            g.blocks.push(DisplayBlock::System(
+                "Interactive run — type a message, Tab cycles agent profile.".into(),
+            ));
         }
     }
-    
-    Ok(input)
+
+    loop {
+        {
+            let mut g = state.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            if g.should_exit {
+                break;
+            }
+
+            let filtered = filter_slash_commands(&g.input_buffer);
+            let slash_h = slash_panel_height(filtered.len());
+
+            terminal.draw(|frame| {
+                let area = frame.area();
+                let (tr, st_r, slash_opt, inp_r) = layout_chunks(area, slash_h);
+
+                let transcript_h = tr.height.saturating_sub(2) as usize;
+                let lines = transcript_lines(&g, tr.width.saturating_sub(2));
+                let total = lines.len();
+                let max_scroll = total.saturating_sub(transcript_h);
+                g.scroll_lines = g.scroll_lines.min(max_scroll);
+                let start = g.scroll_lines;
+                let end = (start + transcript_h).min(total);
+                let visible: Vec<Line> = if start < end {
+                    lines[start..end].to_vec()
+                } else {
+                    vec![]
+                };
+
+                let title = format!(
+                    " transcript — {} lines (↑↓ wheel) ",
+                    total
+                );
+                let main = Paragraph::new(Text::from(visible))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(theme::BORDER))
+                            .title(Span::styled(title, Style::default().fg(theme::MUTED))),
+                    )
+                    .wrap(Wrap { trim: false })
+                    .style(Style::default().bg(theme::BG));
+
+                frame.render_widget(main, tr);
+
+                let elapsed = g.started.elapsed().as_secs();
+                let busy = if g.busy {
+                    Span::styled(" ● busy ", Style::default().fg(theme::WARN))
+                } else {
+                    Span::styled(" ○ idle ", Style::default().fg(theme::SUCCESS))
+                };
+                let status = Line::from(vec![
+                    busy,
+                    Span::raw(" │ "),
+                    Span::styled(&g.model, Style::default().fg(theme::USER)),
+                    Span::raw(" │ "),
+                    Span::styled(
+                        format!("{}", &g.session_id[..8.min(g.session_id.len())]),
+                        Style::default().fg(theme::MUTED),
+                    ),
+                    Span::raw(" │ "),
+                    Span::styled(&g.agent_profile, Style::default().fg(theme::ASSISTANT)),
+                    Span::raw(" │ "),
+                    Span::styled(&g.permission_mode, Style::default().fg(theme::MUTED)),
+                    Span::raw(" │ in:"),
+                    Span::styled(format!("{}", g.input_tokens), Style::default().fg(theme::TEXT)),
+                    Span::raw(" out:"),
+                    Span::styled(format!("{}", g.output_tokens), Style::default().fg(theme::TEXT)),
+                    Span::raw(" │ $"),
+                    Span::styled(
+                        format!("{:.4}", g.cost_usd),
+                        Style::default().fg(theme::SUCCESS),
+                    ),
+                    Span::raw(" │ "),
+                    Span::styled(
+                        format!("{:02}:{:02}", elapsed / 60, elapsed % 60),
+                        Style::default().fg(theme::MUTED),
+                    ),
+                ]);
+                let bar = Paragraph::new(status).style(Style::default().bg(theme::SURFACE));
+                frame.render_widget(bar, st_r);
+
+                if let Some(sr) = slash_opt {
+                    if !filtered.is_empty() {
+                        let n_show = filtered.len().min(SLASH_PANEL_MAX_ROWS);
+                        let max_scroll = filtered.len().saturating_sub(n_show);
+                        let list_scroll = g.slash_menu_index.saturating_sub(n_show.saturating_sub(1)).min(max_scroll);
+                        let mut slash_lines: Vec<Line> = Vec::new();
+                        for (i, cmd) in filtered[list_scroll..list_scroll + n_show].iter().enumerate() {
+                            let global = list_scroll + i;
+                            let st = if global == g.slash_menu_index {
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(theme::USER)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme::TEXT)
+                            };
+                            slash_lines.push(Line::from(Span::styled(format!(" {cmd}"), st)));
+                        }
+                        if filtered.len() > n_show {
+                            slash_lines.push(Line::from(Span::styled(
+                                format!(
+                                    " ─ {}/{} · ↑↓",
+                                    g.slash_menu_index + 1,
+                                    filtered.len()
+                                ),
+                                Style::default().fg(theme::MUTED),
+                            )));
+                        }
+                        let slash_w = Paragraph::new(Text::from(slash_lines))
+                            .block(
+                                Block::default()
+                                    .borders(Borders::ALL)
+                                    .border_style(Style::default().fg(theme::BORDER))
+                                    .title(Span::styled(
+                                        " commands (↑↓ Tab complete) ",
+                                        Style::default().fg(theme::MUTED),
+                                    )),
+                            )
+                            .style(Style::default().bg(theme::SURFACE));
+                        frame.render_widget(slash_w, sr);
+                    }
+                }
+
+                let prompt = Span::styled("❯ ", Style::default().fg(theme::USER).bold());
+                let before: String = g.input_buffer.chars().take(g.cursor_char_idx).collect();
+                let after: String = g.input_buffer.chars().skip(g.cursor_char_idx).collect();
+                let input_line = Line::from(vec![
+                    prompt,
+                    Span::styled(before, Style::default().fg(theme::TEXT)),
+                    Span::styled(
+                        if after.is_empty() {
+                            " ".into()
+                        } else {
+                            after.chars().next().map(|c| c.to_string()).unwrap_or_default()
+                        },
+                        Style::default()
+                            .bg(theme::MUTED)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        after.chars().skip(1).collect::<String>(),
+                        Style::default().fg(theme::TEXT),
+                    ),
+                ]);
+
+                let hint = if g.input_buffer.is_empty() {
+                    Line::from(Span::styled(
+                        "Enter send · Tab agent · / for commands · Esc exit · Ctrl+L clear",
+                        Style::default().fg(theme::MUTED),
+                    ))
+                } else {
+                    Line::default()
+                };
+
+                let input_block = Paragraph::new(Text::from(vec![input_line, hint]))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(theme::BORDER))
+                            .title(Span::styled(" message ", Style::default().fg(theme::MUTED))),
+                    )
+                    .style(Style::default().bg(theme::SURFACE));
+
+                frame.render_widget(input_block, inp_r);
+            })?;
+        }
+
+        if poll(Duration::from_millis(40))? {
+            let ev = read()?;
+            let mut g = state.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+            match ev {
+                Event::Mouse(m) => {
+                    let sz = terminal.size()?;
+                    let area = Rect::new(0, 0, sz.width, sz.height);
+                    let filtered = filter_slash_commands(&g.input_buffer);
+                    let sh = slash_panel_height(filtered.len());
+                    let (tr, _, slash_r, _) = layout_chunks(area, sh);
+
+                    if rect_contains(tr, m.column, m.row) {
+                        let lines = transcript_lines(&g, tr.width.saturating_sub(2));
+                        let total = lines.len();
+                        let th = tr.height.saturating_sub(2) as usize;
+                        let max_scroll = total.saturating_sub(th);
+                        match m.kind {
+                            MouseEventKind::ScrollUp => {
+                                g.scroll_lines = g.scroll_lines.saturating_sub(MOUSE_SCROLL_LINES);
+                            }
+                            MouseEventKind::ScrollDown => {
+                                g.scroll_lines =
+                                    (g.scroll_lines + MOUSE_SCROLL_LINES).min(max_scroll);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(sr) = slash_r {
+                        if rect_contains(sr, m.column, m.row)
+                            && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                        {
+                            let inner_y = m.row.saturating_sub(sr.y).saturating_sub(1);
+                            let n_show = filtered.len().min(SLASH_PANEL_MAX_ROWS);
+                            let max_scroll = filtered.len().saturating_sub(n_show);
+                            let list_scroll = g.slash_menu_index.saturating_sub(n_show.saturating_sub(1)).min(max_scroll);
+                            if (inner_y as usize) < n_show {
+                                let idx = list_scroll + inner_y as usize;
+                                if idx < filtered.len() {
+                                    g.input_buffer = filtered[idx].to_string();
+                                    g.cursor_char_idx = g.input_buffer.chars().count();
+                                    g.slash_menu_index = idx;
+                                }
+                            }
+                        }
+                    }
+                }
+                Event::Key(key) => match (key.code, key.modifiers) {
+                    (KeyCode::Esc, _) => {
+                        g.should_exit = true;
+                        let _ = cmd_tx.send(TuiCmd::Exit);
+                        break;
+                    }
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        let _ = cmd_tx.send(TuiCmd::CancelTurn);
+                    }
+                    (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
+                        g.blocks.clear();
+                        g.streaming_assistant = None;
+                        g.scroll_lines = 0;
+                    }
+                    (KeyCode::Tab, _) => {
+                        let filtered = filter_slash_commands(&g.input_buffer);
+                        if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                            let pick = g.slash_menu_index % filtered.len();
+                            g.input_buffer = filtered[pick].to_string();
+                            g.cursor_char_idx = g.input_buffer.chars().count();
+                        } else {
+                            drop(g);
+                            let _ = cmd_tx.send(TuiCmd::CycleAgent);
+                        }
+                    }
+                    (KeyCode::Enter, _) => {
+                        let line = std::mem::take(&mut g.input_buffer);
+                        g.cursor_char_idx = 0;
+                        g.slash_menu_index = 0;
+                        drop(g);
+                        let _ = cmd_tx.send(TuiCmd::Submit(line));
+                    }
+                    (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
+                        g.cursor_char_idx = 0;
+                    }
+                    (KeyCode::Char('e'), KeyModifiers::CONTROL) | (KeyCode::End, _) => {
+                        g.cursor_char_idx = g.input_buffer.chars().count();
+                    }
+                    (KeyCode::Left, _) => {
+                        g.cursor_char_idx = g.cursor_char_idx.saturating_sub(1);
+                    }
+                    (KeyCode::Right, _) => {
+                        let max = g.input_buffer.chars().count();
+                        g.cursor_char_idx = (g.cursor_char_idx + 1).min(max);
+                    }
+                    (KeyCode::Up, _) => {
+                        let filtered = filter_slash_commands(&g.input_buffer);
+                        if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                            g.slash_menu_index = g.slash_menu_index.saturating_sub(1);
+                        } else {
+                            g.scroll_lines = g.scroll_lines.saturating_sub(1);
+                        }
+                    }
+                    (KeyCode::Down, _) => {
+                        let filtered = filter_slash_commands(&g.input_buffer);
+                        if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                            let n = filtered.len();
+                            g.slash_menu_index = (g.slash_menu_index + 1) % n;
+                        } else {
+                            let sz = terminal.size().ok();
+                            if let Some(sz) = sz {
+                                let area = Rect::new(0, 0, sz.width, sz.height);
+                                let sh = slash_panel_height(filter_slash_commands(&g.input_buffer).len());
+                                let (tr, _, _, _) = layout_chunks(area, sh);
+                                let lines = transcript_lines(&g, tr.width.saturating_sub(2));
+                                let total = lines.len();
+                                let th = tr.height.saturating_sub(2) as usize;
+                                let max_scroll = total.saturating_sub(th);
+                                g.scroll_lines = (g.scroll_lines + 1).min(max_scroll);
+                            }
+                        }
+                    }
+                    (KeyCode::Backspace, _) => {
+                        if g.cursor_char_idx > 0 {
+                            let idx = g.cursor_char_idx;
+                            let mut cs: Vec<char> = g.input_buffer.chars().collect();
+                            cs.remove(idx - 1);
+                            g.input_buffer = cs.into_iter().collect();
+                            g.cursor_char_idx -= 1;
+                            if slash_panel_visible(&g.input_buffer) {
+                                let f = filter_slash_commands(&g.input_buffer);
+                                if !f.is_empty() {
+                                    g.slash_menu_index =
+                                        g.slash_menu_index.min(f.len().saturating_sub(1));
+                                } else {
+                                    g.slash_menu_index = 0;
+                                }
+                            }
+                        }
+                    }
+                    (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        let idx = g.cursor_char_idx;
+                        let mut cs: Vec<char> = g.input_buffer.chars().collect();
+                        cs.insert(idx, c);
+                        g.input_buffer = cs.into_iter().collect();
+                        g.cursor_char_idx += 1;
+                        if slash_panel_visible(&g.input_buffer) {
+                            let f = filter_slash_commands(&g.input_buffer);
+                            if !f.is_empty() {
+                                g.slash_menu_index =
+                                    g.slash_menu_index.min(f.len().saturating_sub(1));
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+
+    restore_terminal();
+    let _ = execute!(stdout(), MoveToColumn(0));
+    Ok(())
 }

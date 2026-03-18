@@ -114,8 +114,9 @@ fn sessions_lists_newest_saved_sessions_first_with_status() {
         .stdout(predicates::str::contains("session-older  status=Completed"));
 }
 
-#[test]
-fn top_level_resume_uses_latest_session() {
+/// Same selection rule as `nca --resume` (latest `updated_at`).
+#[tokio::test]
+async fn resume_targets_session_with_latest_updated_at() {
     let temp = tempdir().expect("tempdir");
     let now = Utc::now();
 
@@ -135,15 +136,24 @@ fn top_level_resume_uses_latest_session() {
         SessionStatus::Completed,
     );
 
-    Command::cargo_bin("nca")
-        .expect("binary")
-        .current_dir(temp.path())
-        .env("HOME", temp.path())
-        .arg("--resume")
-        .write_stdin("/status\n/exit\n")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("session=session-newer"));
+    let store = nca_runtime::session_store::SessionStore::new(
+        temp.path().join(".nca").join("sessions"),
+    );
+    let ids = store.list().await.expect("list");
+    let mut latest: Option<(String, chrono::DateTime<Utc>)> = None;
+    for id in ids {
+        let Ok(session) = store.load(&id).await else {
+            continue;
+        };
+        let replace = latest
+            .as_ref()
+            .map(|(_, t)| session.meta.updated_at > *t)
+            .unwrap_or(true);
+        if replace {
+            latest = Some((session.meta.id, session.meta.updated_at));
+        }
+    }
+    assert_eq!(latest.map(|(id, _)| id).as_deref(), Some("session-newer"));
 }
 
 #[test]

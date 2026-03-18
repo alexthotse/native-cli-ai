@@ -84,6 +84,10 @@ impl SessionRuntime {
         self.supervisor.agent_mut().approval.set_mode(mode);
     }
 
+    pub fn request_cancel(&self) {
+        self.supervisor.request_cancel();
+    }
+
     pub async fn list_session_ids(&self) -> Result<Vec<String>, String> {
         let store = nca_runtime::session_store::SessionStore::new(
             self.workspace_root().join(&self.config.session.history_dir),

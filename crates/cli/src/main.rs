@@ -2,6 +2,7 @@ mod approval_prompt;
 mod approval_prompts;
 mod prompt;
 mod repl;
+mod slash_commands;
 mod runner;
 mod stream;
 mod tui;
@@ -18,6 +19,7 @@ use nca_core::skills::SkillCatalog;
 use nca_runtime::memory_store::{MemoryNote, MemoryStore};
 use repl::Repl;
 use runner::{build_resumed_session_runtime, build_session_runtime};
+use std::io::{IsTerminal, stdin, stdout};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use stream::{StreamMode, spawn_stream_task};
@@ -74,6 +76,10 @@ struct Cli {
     /// Streaming output format
     #[arg(long, value_enum, default_value_t = StreamMode::Human)]
     stream: StreamMode,
+
+    /// Line-oriented REPL instead of full-screen TUI (scripts, CI, or broken approval prompts)
+    #[arg(long)]
+    no_tui: bool,
 
     /// Permission handling mode (default: from config, fallback to `default`)
     #[arg(long, value_enum)]
@@ -156,6 +162,8 @@ enum Command {
         safe: bool,
         #[arg(long, value_enum, default_value_t = StreamMode::Human)]
         stream: StreamMode,
+        #[arg(long)]
+        no_tui: bool,
         #[arg(long, value_enum)]
         permission_mode: Option<CliPermissionMode>,
     },
@@ -392,6 +400,7 @@ async fn try_main() -> anyhow::Result<()> {
             model,
             safe,
             stream,
+            no_tui,
             permission_mode,
         }) => {
             if let Some(model) = model {
@@ -400,7 +409,16 @@ async fn try_main() -> anyhow::Result<()> {
             if let Some(mode) = permission_mode {
                 config.permissions.mode = mode.into();
             }
-            resume_session(config, &workspace_root, &session_id, prompt, safe, stream).await?;
+            resume_session(
+                config,
+                &workspace_root,
+                &session_id,
+                prompt,
+                safe,
+                stream,
+                no_tui,
+            )
+            .await?;
         }
         Some(Command::Logs {
             session_id,
@@ -500,6 +518,7 @@ async fn try_main() -> anyhow::Result<()> {
                     None,
                     cli.safe,
                     cli.stream,
+                    cli.no_tui,
                 )
                 .await?;
             } else {
@@ -521,18 +540,28 @@ async fn try_main() -> anyhow::Result<()> {
                 )
                 .await
                 .map_err(anyhow::Error::msg)?;
-                if let Some(rx) = runtime.take_event_rx() {
-                    let ipc_handle = runtime.take_ipc_handle();
-                    let approval_pending = runtime.take_ipc_approval_pending();
-                    let _stream_task = spawn_stream_task(
-                        rx,
-                        cli.stream,
-                        runtime.event_log_path(),
-                        ipc_handle,
-                        approval_pending,
-                        None,
-                    );
-                    let mut repl = Repl::new(runtime, cli.safe, cli.run);
+                let use_tui = !cli.no_tui
+                    && stdout().is_terminal()
+                    && stdin().is_terminal()
+                    && matches!(cli.stream, StreamMode::Human);
+                if !use_tui {
+                    if let Some(rx) = runtime.take_event_rx() {
+                        let ipc_handle = runtime.take_ipc_handle();
+                        let approval_pending = runtime.take_ipc_approval_pending();
+                        let _stream_task = spawn_stream_task(
+                            rx,
+                            cli.stream,
+                            runtime.event_log_path(),
+                            ipc_handle,
+                            approval_pending,
+                            None,
+                        );
+                    }
+                }
+                let mut repl = Repl::new(runtime, cli.safe, cli.run);
+                if use_tui {
+                    repl.run_with_tui().await?;
+                } else {
                     repl.run().await?;
                 }
             }
@@ -820,31 +849,55 @@ async fn resume_session(
     prompt: Option<String>,
     safe: bool,
     stream: StreamMode,
+    no_tui: bool,
 ) -> anyhow::Result<()> {
     let mut runtime = build_resumed_session_runtime(config, workspace_root, safe, true, session_id)
         .await
         .map_err(anyhow::Error::msg)?;
-    if let Some(rx) = runtime.take_event_rx() {
-        let ipc_handle = runtime.take_ipc_handle();
-        let approval_pending = runtime.take_ipc_approval_pending();
-        let _stream_task = spawn_stream_task(
-            rx,
-            stream,
-            runtime.event_log_path(),
-            ipc_handle,
-            approval_pending,
-            None,
-        );
-        if let Some(prompt) = prompt {
-            let output = runtime
-                .run_turn(&prompt)
-                .await
-                .map_err(anyhow::Error::msg)?;
-            println!("{output}");
-        } else {
-            let mut repl = Repl::new(runtime, safe, true);
-            repl.run().await?;
+    let use_tui = !no_tui
+        && stdout().is_terminal()
+        && stdin().is_terminal()
+        && matches!(stream, StreamMode::Human);
+    if let Some(prompt) = prompt {
+        if let Some(rx) = runtime.take_event_rx() {
+            let ipc_handle = runtime.take_ipc_handle();
+            let approval_pending = runtime.take_ipc_approval_pending();
+            let _stream_task = spawn_stream_task(
+                rx,
+                stream,
+                runtime.event_log_path(),
+                ipc_handle,
+                approval_pending,
+                None,
+            );
         }
+        let output = runtime
+            .run_turn(&prompt)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        println!("{output}");
+        return Ok(());
+    }
+
+    if !use_tui {
+        if let Some(rx) = runtime.take_event_rx() {
+            let ipc_handle = runtime.take_ipc_handle();
+            let approval_pending = runtime.take_ipc_approval_pending();
+            let _stream_task = spawn_stream_task(
+                rx,
+                stream,
+                runtime.event_log_path(),
+                ipc_handle,
+                approval_pending,
+                None,
+            );
+        }
+    }
+    let mut repl = Repl::new(runtime, safe, true);
+    if use_tui {
+        repl.run_with_tui().await?;
+    } else {
+        repl.run().await?;
     }
     Ok(())
 }
