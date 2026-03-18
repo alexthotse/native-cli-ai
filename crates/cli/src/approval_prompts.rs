@@ -1,0 +1,267 @@
+//! Interactive CLI approval prompts using cli-prompts library.
+//!
+//! Provides enhanced approval dialogs with:
+//! - Rich tool descriptions
+//! - Formatted JSON input display
+//! - Confirmation prompts with help text
+//! - Multi-select for batch approvals
+
+use nca_common::tool::ToolCall;
+use nca_core::approval::ApprovalHandler;
+use cli_prompts::{
+    prompts::{Confirmation, AbortReason},
+    DisplayPrompt,
+};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
+
+/// Pretty-print JSON with indentation for readability
+pub fn format_json_pretty(value: &Value) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(value.as_str().unwrap_or("")) {
+        serde_json::to_string_pretty(&v).unwrap_or_else(|_| value.to_string())
+    } else {
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    }
+}
+
+/// Truncate long strings with ellipsis
+pub fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
+/// Interactive approval handler using cli-prompts library.
+/// Provides rich TUI prompts for tool approval.
+pub struct InteractiveApprovalHandler {
+    prompt_lock: AsyncMutex<()>,
+    show_full_json: bool,
+}
+
+impl InteractiveApprovalHandler {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            prompt_lock: AsyncMutex::new(()),
+            show_full_json: false,
+        })
+    }
+
+    pub fn with_full_json(mut self, show: bool) -> Self {
+        self.show_full_json = show;
+        self
+    }
+
+    fn prompt_approval(&self, call: &ToolCall, description: &str) -> Option<bool> {
+        let tool_name = &call.name;
+        let input_preview = truncate(&format_json_pretty(&call.input), 150);
+
+        let prompt_msg = if description.is_empty() {
+            format!(
+                "Tool '{}' wants to execute:\n\n{}",
+                tool_name, input_preview
+            )
+        } else {
+            format!(
+                "{}\n\nTool: {}\nInput preview: {}",
+                description, tool_name, input_preview
+            )
+        };
+
+        let confirmed = Confirmation::new(&prompt_msg)
+            .default_positive(false)
+            .display();
+
+        match confirmed {
+            Ok(true) => Some(true),
+            Ok(false) => Some(false),
+            Err(AbortReason::Interrupt) | Err(AbortReason::Error(_)) => None,
+        }
+    }
+
+    fn show_tool_details(&self, call: &ToolCall) {
+        println!("\n╭─────────────────────────────────────────────────────────────╮");
+        println!("│ Tool: {}                                                   ", call.name);
+        println!("├─────────────────────────────────────────────────────────────┤");
+
+        let json_str = format_json_pretty(&call.input);
+        for line in json_str.lines() {
+            println!("│ {} │", truncate(line, 59));
+        }
+
+        println!("╰─────────────────────────────────────────────────────────────╯\n");
+    }
+}
+
+impl Default for InteractiveApprovalHandler {
+    fn default() -> Self {
+        Self {
+            prompt_lock: AsyncMutex::new(()),
+            show_full_json: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ApprovalHandler for InteractiveApprovalHandler {
+    async fn resolve(&self, call: &ToolCall, description: &str) -> bool {
+        let _guard = self.prompt_lock.lock().await;
+        self.prompt_approval(call, description).unwrap_or(false)
+    }
+}
+
+/// Interactive IPC approval handler that uses rich prompts
+/// with fallback to legacy stdio if IPC times out.
+pub struct InteractiveIpcApprovalHandler {
+    pending: tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    prompt_lock: AsyncMutex<()>,
+}
+
+impl InteractiveIpcApprovalHandler {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            pending: tokio::sync::Mutex::new(HashMap::new()),
+            prompt_lock: AsyncMutex::new(()),
+        })
+    }
+
+    fn prompt_approval(&self, call: &ToolCall, description: &str) -> Option<bool> {
+        let tool_name = &call.name;
+        let input_preview = truncate(&format_json_pretty(&call.input), 150);
+
+        let prompt_msg = if description.is_empty() {
+            format!(
+                "Tool '{}' wants to execute:\n\n{}",
+                tool_name, input_preview
+            )
+        } else {
+            format!(
+                "{}\n\nTool: {}\nInput: {}",
+                description, tool_name, input_preview
+            )
+        };
+
+        let confirmed = Confirmation::new(&prompt_msg)
+            .default_positive(false)
+            .display();
+
+        match confirmed {
+            Ok(true) => Some(true),
+            Ok(false) => Some(false),
+            Err(AbortReason::Interrupt) | Err(AbortReason::Error(_)) => None,
+        }
+    }
+}
+
+impl Default for InteractiveIpcApprovalHandler {
+    fn default() -> Self {
+        Self {
+            pending: tokio::sync::Mutex::new(HashMap::new()),
+            prompt_lock: AsyncMutex::new(()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ApprovalHandler for InteractiveIpcApprovalHandler {
+    async fn resolve(&self, call: &ToolCall, description: &str) -> bool {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut m = self.pending.lock().await;
+            m.insert(call.id.clone(), tx);
+        }
+
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+            Ok(Ok(approved)) => {
+                let mut m = self.pending.lock().await;
+                m.remove(&call.id);
+                approved
+            }
+            _ => {
+                let mut m = self.pending.lock().await;
+                m.remove(&call.id);
+                drop(m);
+
+                let _guard = self.prompt_lock.lock().await;
+                self.prompt_approval(call, description).unwrap_or(false)
+            }
+        }
+    }
+}
+
+/// Legacy stdio handler for backward compatibility
+pub mod legacy {
+    use super::*;
+    use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    pub struct StdioApprovalHandler {
+        prompt_lock: AsyncMutex<()>,
+    }
+
+    impl StdioApprovalHandler {
+        pub fn new() -> Arc<Self> {
+            Arc::new(Self {
+                prompt_lock: AsyncMutex::new(()),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ApprovalHandler for StdioApprovalHandler {
+        async fn resolve(&self, call: &ToolCall, description: &str) -> bool {
+            let _guard = self.prompt_lock.lock().await;
+            let mut stderr = io::stderr();
+            let stdin = io::stdin();
+            let mut reader = BufReader::new(stdin);
+
+            let prompt = format!(
+                "\n[approval] {description}\nTool: {}\nInput: {}\nApprove? [y/N]: ",
+                call.name, call.input
+            );
+            if stderr.write_all(prompt.as_bytes()).await.is_err() {
+                return false;
+            }
+            if stderr.flush().await.is_err() {
+                return false;
+            }
+
+            let mut answer = String::new();
+            if reader.read_line(&mut answer).await.is_err() {
+                return false;
+            }
+
+            matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_short() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_long() {
+        assert_eq!(truncate("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn test_truncate_exact() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_format_json_pretty_valid() {
+        let json = serde_json::json!({"key": "value"});
+        let formatted = format_json_pretty(&json);
+        assert!(formatted.contains("key"));
+        assert!(formatted.contains("value"));
+    }
+}

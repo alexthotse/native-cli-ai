@@ -14,6 +14,18 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/user/native-cli-ai"
 
+# Release profile optimized for size and speed
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Dev profile for faster builds during development
+[profile.dev]
+opt-level = 0
+
 [workspace.dependencies]
 # Shared across multiple crates
 serde = { version = "1", features = ["derive"] }
@@ -24,6 +36,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
+
+# External crates
+cli-prompts = "0.1"
 
 # Common crate (internal)
 nca-common = { path = "crates/common" }

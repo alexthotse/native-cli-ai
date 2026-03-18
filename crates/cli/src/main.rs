@@ -1,11 +1,15 @@
 mod approval_prompt;
+mod approval_prompts;
 mod prompt;
 mod repl;
 mod runner;
 mod stream;
+mod tui;
 
-use crate::approval_prompt::IpcApprovalHandler;
+use crate::approval_prompts::InteractiveIpcApprovalHandler;
 use clap::Parser;
+use clap::CommandFactory;
+use clap_complete::aot::generate;
 use nca_common::config::{NcaConfig, PermissionMode, ProviderKind};
 use nca_common::event::EndReason;
 use nca_common::event::{AgentCommand, EventEnvelope};
@@ -129,6 +133,18 @@ enum Command {
     Sessions {
         #[arg(long)]
         json: bool,
+        /// Filter sessions by status (running, completed, cancelled, failed)
+        #[arg(long, value_enum)]
+        status: Option<SessionStatusFilter>,
+        /// Filter sessions updated in the last N hours
+        #[arg(long)]
+        since_hours: Option<u32>,
+        /// Search sessions by content/pattern
+        #[arg(long)]
+        search: Option<String>,
+        /// Limit number of sessions shown
+        #[arg(long, default_value = "20")]
+        limit: usize,
     },
     Resume {
         session_id: String,
@@ -191,6 +207,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Generate shell completions for bash, zsh, fish, or PowerShell
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum, default_value_t = ClapShell::Bash)]
+        shell: ClapShell,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ClapShell {
+    Bash,
+    Zsh,
+    Fish,
+    PowerShell,
+    Elvish,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -210,6 +241,14 @@ enum CliPermissionMode {
     AcceptEdits,
     DontAsk,
     BypassPermissions,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum SessionStatusFilter {
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
 }
 
 impl From<CliPermissionMode> for PermissionMode {
@@ -344,8 +383,8 @@ async fn try_main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Some(Command::Sessions { json }) => {
-            list_sessions(&config, &workspace_root, json).await?;
+        Some(Command::Sessions { json, status, since_hours, search, limit }) => {
+            list_sessions(&config, &workspace_root, json, status, since_hours, search, limit).await?;
         }
         Some(Command::Resume {
             session_id,
@@ -400,13 +439,16 @@ async fn try_main() -> anyhow::Result<()> {
         Some(Command::Config { json }) => {
             show_config(&config, &workspace_root, json)?;
         }
+        Some(Command::Completion { shell }) => {
+            generate_shell_completion(shell);
+        }
         None => {
             if let Some(prompt) = cli.prompt.as_deref() {
                 if let Some(mode) = cli.permission_mode {
                     config.permissions.mode = mode.into();
                 }
                 if cli.run {
-                    let ipc_approval = IpcApprovalHandler::new();
+                    let ipc_approval = InteractiveIpcApprovalHandler::new();
                     let mut runtime = build_session_runtime(
                         config.clone(),
                         &workspace_root,
@@ -467,7 +509,7 @@ async fn try_main() -> anyhow::Result<()> {
                 if let Some(mode) = cli.permission_mode {
                     config.permissions.mode = mode.into();
                 }
-                let ipc_approval = IpcApprovalHandler::new();
+                let ipc_approval = InteractiveIpcApprovalHandler::new();
                 let mut runtime = build_session_runtime(
                     config.clone(),
                     &workspace_root,
@@ -665,7 +707,13 @@ async fn list_sessions(
     config: &NcaConfig,
     workspace_root: &PathBuf,
     json: bool,
+    status_filter: Option<SessionStatusFilter>,
+    since_hours: Option<u32>,
+    search: Option<String>,
+    limit: usize,
 ) -> anyhow::Result<()> {
+    use nca_common::session::SessionStatus;
+
     let store = nca_runtime::session_store::SessionStore::new(
         workspace_root.join(&config.session.history_dir),
     );
@@ -680,12 +728,44 @@ async fn list_sessions(
         }
     }
 
+    // Apply status filter
+    if let Some(status) = status_filter {
+        sessions.retain(|s| {
+            let status_match = match status {
+                SessionStatusFilter::Running => matches!(s.status, SessionStatus::Running),
+                SessionStatusFilter::Completed => matches!(s.status, SessionStatus::Completed),
+                SessionStatusFilter::Cancelled => matches!(s.status, SessionStatus::Cancelled),
+                SessionStatusFilter::Failed => matches!(s.status, SessionStatus::Error),
+            };
+            status_match
+        });
+    }
+
+    // Apply time filter
+    if let Some(hours) = since_hours {
+        let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours as i64);
+        sessions.retain(|s| s.updated_at > cutoff);
+    }
+
+    // Apply search filter
+    if let Some(pattern) = search {
+        let pattern_lower = pattern.to_lowercase();
+        sessions.retain(|s| {
+            s.id.to_lowercase().contains(&pattern_lower)
+                || s.session_summary.as_ref().map(|sum| sum.to_lowercase().contains(&pattern_lower)).unwrap_or(false)
+                || s.model.to_lowercase().contains(&pattern_lower)
+        });
+    }
+
     sessions.sort_by(|left, right| {
         right
             .updated_at
             .cmp(&left.updated_at)
             .then_with(|| left.id.cmp(&right.id))
     });
+
+    // Apply limit
+    sessions.truncate(limit);
     unreadable.sort();
 
     if json {
@@ -1262,6 +1342,29 @@ fn print_json<T: serde::Serialize>(value: &T, pretty: bool) -> anyhow::Result<()
     };
     println!("{rendered}");
     Ok(())
+}
+
+fn generate_shell_completion(shell: ClapShell) {
+    let mut cmd = Cli::command();
+    let bin_name = "nca";
+
+    match shell {
+        ClapShell::Bash => {
+            generate(clap_complete::shells::Bash, &mut cmd, bin_name, &mut std::io::stdout());
+        }
+        ClapShell::Zsh => {
+            generate(clap_complete::shells::Zsh, &mut cmd, bin_name, &mut std::io::stdout());
+        }
+        ClapShell::Fish => {
+            generate(clap_complete::shells::Fish, &mut cmd, bin_name, &mut std::io::stdout());
+        }
+        ClapShell::PowerShell => {
+            generate(clap_complete::shells::PowerShell, &mut cmd, bin_name, &mut std::io::stdout());
+        }
+        ClapShell::Elvish => {
+            generate(clap_complete::shells::Elvish, &mut cmd, bin_name, &mut std::io::stdout());
+        }
+    }
 }
 
 fn classify_exit_code(error: &anyhow::Error) -> ExitCode {

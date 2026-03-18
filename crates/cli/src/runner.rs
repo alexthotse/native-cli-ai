@@ -1,4 +1,3 @@
-use crate::approval_prompt::IpcApprovalHandler;
 use nca_common::config::{NcaConfig, PermissionMode};
 use nca_common::event::{AgentEvent, EndReason};
 use nca_common::session::{OrchestrationContext, SessionSnapshot};
@@ -127,11 +126,10 @@ pub async fn build_session_runtime(
     safe_mode: bool,
     interactive_approvals: bool,
     session_id: Option<String>,
-    ipc_approval_handler: Option<Arc<IpcApprovalHandler>>,
+    ipc_approval_handler: Option<Arc<dyn ApprovalHandler>>,
     orchestration_context: Option<OrchestrationContext>,
 ) -> Result<SessionRuntime, ProviderError> {
-    let approval_handler: Option<Arc<dyn ApprovalHandler>> =
-        ipc_approval_handler.map(|h| h as Arc<dyn ApprovalHandler>);
+    let approval_handler = ipc_approval_handler;
 
     let mut supervisor = Supervisor::create(SupervisorConfig {
         config: config.clone(),

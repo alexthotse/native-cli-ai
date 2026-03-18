@@ -1,15 +1,78 @@
+//! Event streaming with beautiful TUI rendering
+//! 
+//! This module provides streaming event rendering with Claude Code-inspired styling.
+
+use colored::Colorize;
 use nca_common::event::{AgentEvent, EventEnvelope};
 use nca_runtime::ipc::IpcHandle;
 use nca_runtime::supervisor;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::oneshot;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum StreamMode {
     Off,
     Human,
     Ndjson,
+}
+
+/// Real-time streaming stats
+#[derive(Clone)]
+struct StreamStats {
+    input_tokens: Arc<AtomicU64>,
+    output_tokens: Arc<AtomicU64>,
+    estimated_cost: Arc<AtomicU64>,
+    start_time: Instant,
+}
+
+impl StreamStats {
+    fn new() -> Self {
+        Self {
+            input_tokens: Arc::new(AtomicU64::new(0)),
+            output_tokens: Arc::new(AtomicU64::new(0)),
+            estimated_cost: Arc::new(AtomicU64::new(0)),
+            start_time: Instant::now(),
+        }
+    }
+
+    fn update_cost(&self, input: u64, output: u64, cost_cents: u64) {
+        self.input_tokens.store(input, Ordering::Relaxed);
+        self.output_tokens.store(output, Ordering::Relaxed);
+        self.estimated_cost.store(cost_cents, Ordering::Relaxed);
+    }
+
+    fn record_output_token(&self) {
+        self.output_tokens.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn input_tokens(&self) -> u64 {
+        self.input_tokens.load(Ordering::Relaxed)
+    }
+
+    fn output_tokens(&self) -> u64 {
+        self.output_tokens.load(Ordering::Relaxed)
+    }
+
+    fn estimated_cost_usd(&self) -> f64 {
+        self.estimated_cost.load(Ordering::Relaxed) as f64 / 100.0
+    }
+
+    fn elapsed_secs(&self) -> u64 {
+        self.start_time.elapsed().as_secs()
+    }
+}
+
+impl Default for StreamStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct IpcRebroadcast {
+    event_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 /// Spawns the stream task: event fanout (disk + IPC + rendering) and command consumer.
@@ -42,16 +105,21 @@ pub fn spawn_event_fanout_task(
     log_path: std::path::PathBuf,
     event_tx_ipc: Option<tokio::sync::broadcast::Sender<String>>,
 ) -> tokio::task::JoinHandle<()> {
-    let on_event: Option<Box<dyn Fn(&EventEnvelope) + Send>> = match mode {
+    let stats = StreamStats::new();
+
+    let on_event: Option<Arc<dyn Fn(&EventEnvelope) + Send + Sync>> = match mode {
         StreamMode::Off => None,
-        StreamMode::Ndjson => Some(Box::new(|envelope: &EventEnvelope| {
+        StreamMode::Ndjson => Some(Arc::new(|envelope: &EventEnvelope| {
             if let Ok(line) = serde_json::to_string(envelope) {
                 println!("{line}");
             }
         })),
-        StreamMode::Human => Some(Box::new(|envelope: &EventEnvelope| {
-            render_human_event(&envelope.event);
-        })),
+        StreamMode::Human => {
+            let stats = stats.clone();
+            Some(Arc::new(move |envelope: &EventEnvelope| {
+                render_event(&envelope.event, &stats);
+            }))
+        }
     };
 
     let ipc_handle_rebuilt = event_tx_ipc.map(|tx| IpcRebroadcast { event_tx: tx });
@@ -93,77 +161,139 @@ pub fn spawn_event_fanout_task(
     })
 }
 
-struct IpcRebroadcast {
-    event_tx: tokio::sync::broadcast::Sender<String>,
+// Claude Code-inspired color theme
+mod theme {
+    use colored::Color;
+
+    pub const CLEAR_LINE: &str = "\x1B[2K";
+
+    pub const USER_BG: Color = Color::TrueColor { r: 0, g: 145, b: 191 };
+    pub const ASSISTANT_BG: Color = Color::TrueColor { r: 137, g: 87, b: 220 };
+    pub const TOOL_BG: Color = Color::TrueColor { r: 58, g: 170, b: 214 };
+
+    pub const SUCCESS: Color = Color::TrueColor { r: 63, g: 185, b: 80 };
+    pub const ERROR: Color = Color::TrueColor { r: 248, g: 81, b: 73 };
+    pub const WARNING: Color = Color::TrueColor { r: 210, g: 153, b: 34 };
+
+    pub const TEXT: Color = Color::TrueColor { r: 220, g: 220, b: 230 };
+    pub const TEXT_DIM: Color = Color::TrueColor { r: 150, g: 150, b: 160 };
 }
 
-pub(crate) fn render_human_event(event: &AgentEvent) {
+/// Render a single event with Claude Code-like styling
+fn render_event(event: &AgentEvent, stats: &StreamStats) {
     match event {
-        AgentEvent::SessionStarted {
-            session_id, model, ..
-        } => eprintln!("[session] {session_id} model={model}"),
+        AgentEvent::SessionStarted { session_id: _, model, workspace: _ } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            println!(
+                "{} {}",
+                "Connected to".color(theme::SUCCESS),
+                model.color(theme::TEXT)
+            );
+            println!();
+        }
         AgentEvent::TokensStreamed { delta } => {
             print!("{delta}");
+            stats.record_output_token();
         }
-        AgentEvent::ToolCallStarted { tool, input, .. } => {
-            eprintln!("\n[tool:start] {tool} {input}");
+        AgentEvent::ToolCallStarted { tool, input: _, call_id: _ } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            println!(
+                "  {} {}",
+                "⚡".color(theme::TOOL_BG).bold(),
+                tool.to_uppercase().color(theme::TOOL_BG)
+            );
         }
-        AgentEvent::ToolCallCompleted { output, .. } => {
+        AgentEvent::ToolCallCompleted { call_id: _, output } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
             if output.success {
-                eprintln!("[tool:done] ok");
+                println!(
+                    "  {} {}",
+                    "✓".color(theme::SUCCESS),
+                    "Tool completed".color(theme::TEXT_DIM)
+                );
             } else {
-                eprintln!(
-                    "[tool:done] error: {}",
-                    output.error.as_deref().unwrap_or("tool failed")
+                println!(
+                    "  {} {}",
+                    "✗".color(theme::ERROR),
+                    output.error.as_deref().unwrap_or("Tool failed").color(theme::ERROR)
                 );
             }
         }
-        AgentEvent::ApprovalRequested {
-            tool, description, ..
-        } => {
-            eprintln!("[approval] {tool}: {description}");
-        }
-        AgentEvent::ApprovalResolved { approved, .. } => {
-            eprintln!("[approval] resolved={approved}");
-        }
-        AgentEvent::Checkpoint {
-            phase,
-            detail,
-            turn,
-        } => {
-            eprintln!("[checkpoint] turn={turn} phase={phase} {detail}");
-        }
-        AgentEvent::SessionEnded { reason } => {
-            eprintln!("\n[session:end] {:?}", reason);
-        }
-        AgentEvent::Error { message } => {
-            eprintln!("[error] {message}");
-        }
-        AgentEvent::Response { response } => {
-            eprintln!(
-                "[response] {}",
-                serde_json::to_string(response).unwrap_or_default()
+        AgentEvent::ApprovalRequested { call_id: _, tool, description } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            println!(
+                "  {} {}: {}",
+                "?".color(theme::WARNING).bold(),
+                tool.color(theme::WARNING),
+                description.color(theme::TEXT_DIM)
             );
         }
-        AgentEvent::ChildSessionSpawned {
-            child_session_id,
-            task,
-            ..
-        } => {
-            eprintln!("[subagent:spawn] {child_session_id} task={task}");
+        AgentEvent::ApprovalResolved { call_id: _, approved } => {
+            print!("{}", theme::CLEAR_LINE);
+            if *approved {
+                println!("  {} {}", "✓".color(theme::SUCCESS), "Approved".color(theme::SUCCESS));
+            } else {
+                println!("  {} {}", "✗".color(theme::ERROR), "Denied".color(theme::ERROR));
+            }
         }
-        AgentEvent::ChildSessionCompleted {
-            child_session_id,
-            status,
-            ..
-        } => {
-            eprintln!("[subagent:done] {child_session_id} status={status}");
+        AgentEvent::CostUpdated { input_tokens, output_tokens, estimated_cost_usd } => {
+            stats.update_cost(*input_tokens, *output_tokens, (*estimated_cost_usd * 100.0) as u64);
         }
-        AgentEvent::MessageReceived { .. }
-        | AgentEvent::CostUpdated { .. }
-        | AgentEvent::TodoStatusChanged { .. }
-        | AgentEvent::TodoAssigned { .. }
-        | AgentEvent::RunLinked { .. }
-        | AgentEvent::DesktopModeChanged { .. } => {}
+        AgentEvent::SessionEnded { reason } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            println!();
+            println!("  Session ended ({reason:?})");
+            println!(
+                "  {}/{} tokens, ${:.4}",
+                stats.input_tokens(),
+                stats.output_tokens(),
+                stats.estimated_cost_usd()
+            );
+        }
+        AgentEvent::Error { message } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            println!("  {} {}", "✗".color(theme::ERROR), message.color(theme::ERROR));
+        }
+        AgentEvent::MessageReceived { role, content } => {
+            println!();
+            let header = match role.as_str() {
+                "user" => format!(" {} ", "YOU".to_uppercase())
+                    .on_color(theme::USER_BG)
+                    .white()
+                    .bold(),
+                "assistant" => format!(" {} ", "nca")
+                    .on_color(theme::ASSISTANT_BG)
+                    .white()
+                    .bold(),
+                _ => format!(" {} ", role.to_uppercase())
+                    .on_color(theme::WARNING)
+                    .white()
+                    .bold(),
+            };
+            println!("{header}");
+            println!();
+            for line in content.lines() {
+                if line.trim().is_empty() {
+                    println!();
+                } else if line.starts_with("```") {
+                    println!("{}", line.color(theme::TEXT_DIM));
+                } else {
+                    println!("{}", line.color(theme::TEXT));
+                }
+            }
+        }
+        _ => {}
     }
+}
+
+/// Public wrapper for rendering a single event (used by main.rs)
+pub fn render_human_event(event: &AgentEvent) {
+    let stats = StreamStats::new();
+    render_event(event, &stats);
 }
