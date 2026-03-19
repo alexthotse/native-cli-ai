@@ -60,6 +60,8 @@ nca attach <session_id>
 nca-monitor
 ```
 
+The full-screen CLI cannot change your font from Rust—it follows your terminal’s monospace setting. For a modern look (and correct TUI alignment), see [CLI terminal fonts](docs/cli-terminal-fonts.md).
+
 ## Built For Agent Orchestration
 
 `nca` is designed to be launched by other systems, wrappers, and local control planes.

@@ -377,4 +377,15 @@ impl OrchestrationService {
     ) -> Result<(), String> {
         self.store.touch_run_status(session_id, status)
     }
+
+    pub fn update_run_link_git_fields(
+        &self,
+        session_id: &str,
+        worktree_path: Option<&std::path::PathBuf>,
+        branch: Option<&str>,
+        parent_session_id: Option<&str>,
+    ) -> Result<bool, String> {
+        self.store
+            .update_run_link_git_fields(session_id, worktree_path, branch, parent_session_id)
+    }
 }

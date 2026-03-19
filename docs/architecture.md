@@ -73,14 +73,15 @@ native-cli-ai/
 │       ├── Cargo.toml
 │       └── src/
 │           ├── main.rs         # eframe launch
-│           ├── app.rs          # MonitorApp state
-│           ├── panels/
-│           │   ├── sessions.rs # Session list and selector
-│           │   ├── terminal.rs # Live terminal mirror
-│           │   ├── tools.rs    # Tool call history
-│           │   ├── diff.rs     # Diff viewer
-│           │   └── stats.rs    # Token usage, cost, model info
-│           └── ipc_client.rs   # Connects to runtime IPC
+│           ├── controller.rs   # LiveAttachController → runtime IpcClient
+│           ├── workspaces.rs   # WorkspaceRegistry view-model
+│           └── app/
+│               ├── mod.rs      # DesktopApp: orchestration, sessions, views, eframe::App
+│               ├── types.rs    # View, ActiveSession, forms, chat types
+│               ├── palette.rs  # egui color constants
+│               ├── widgets.rs  # Shared UI helpers (cards, config form, chat bubbles)
+│               ├── session_io.rs # SessionStore load + attach_controller
+│               └── git_worktree.rs # Git banner, .nca/worktrees, diff review, merge/remove
 │
 ├── docs/
 │   ├── prd.md
@@ -145,9 +146,9 @@ flowchart LR
 - **`runtime::worktree`**: Isolated git worktree creation, cleanup, and merge per agent run.
 - **`runtime::bash_tool`**: PTY-backed bash execution, registered by the supervisor.
 - **`monitor::workspaces`**: Desktop workspace view-model and navigation.
-- **`monitor::panels::review`**: Review workbench with changed files, diff viewer, and merge actions.
-- **`monitor::panels::files`**: Changed files browser.
-- **`monitor::panels::diff`**: Unified diff viewer with syntax coloring.
+- **`monitor::app::git_worktree`**: Git repo banner, NCA worktree list, per-file diff vs base branch, merge/remove confirmations (uses `runtime::worktree::WorktreeManager`).
+- **`monitor::app::session_io`**: Load session metas/transcripts from disk; attach to IPC socket.
+- **`OrchestrationService::update_run_link_git_fields`**: Syncs `worktree_path` / `branch` / `parent_session_id` on `run_links` when session JSON contains them (desktop reload hook).
 
 ---
 

@@ -306,6 +306,32 @@ impl OrchestratorStore {
         Ok(())
     }
 
+    /// Updates git-related columns for an existing run link row matching `session_id`.
+    /// Returns whether any row was updated.
+    pub fn update_run_link_git_fields(
+        &self,
+        session_id: &str,
+        worktree_path: Option<&std::path::PathBuf>,
+        branch: Option<&str>,
+        parent_session_id: Option<&str>,
+    ) -> Result<bool, String> {
+        let conn = self.open()?;
+        let n = conn
+            .execute(
+                "UPDATE run_links SET worktree_path = ?1, branch = ?2, parent_session_id = ?3, updated_at = ?4
+                 WHERE session_id = ?5",
+                params![
+                    path_to_db(worktree_path),
+                    branch,
+                    parent_session_id,
+                    Utc::now().to_rfc3339(),
+                    session_id
+                ],
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(n > 0)
+    }
+
     fn open(&self) -> Result<Connection, String> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -764,7 +790,11 @@ fn session_status_from_str(value: &str) -> nca_common::session::SessionStatus {
 #[cfg(test)]
 mod tests {
     use super::OrchestratorStore;
-    use nca_common::orchestration::{DesktopMode, NewCompany, NewProject, NewTodo};
+    use nca_common::orchestration::{
+        DesktopMode, LinkRunRequest, NewCompany, NewProject, NewTodo,
+    };
+    use nca_common::session::SessionStatus;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     #[test]
@@ -803,5 +833,69 @@ mod tests {
         assert_eq!(snapshot.projects.len(), 1);
         assert_eq!(snapshot.todos.len(), 1);
         assert_eq!(snapshot.mode.mode, DesktopMode::ProjectAi);
+    }
+
+    #[test]
+    fn update_run_link_git_fields_updates_row() {
+        let dir = tempdir().expect("tempdir");
+        let store = OrchestratorStore::new(dir.path().join("orchestrator.db"));
+        let company = store
+            .create_company(NewCompany {
+                name: "Co".into(),
+                description: None,
+            })
+            .expect("company");
+        let project = store
+            .create_project(NewProject {
+                company_id: company.id,
+                name: "Prj".into(),
+                slug: "prj".into(),
+                description: None,
+                workspace_root: Some(PathBuf::from("/tmp/ws")),
+            })
+            .expect("project");
+        let todo = store
+            .create_todo(NewTodo {
+                project_id: project.id,
+                title: "Task".into(),
+                description: None,
+                priority: Default::default(),
+                acceptance_criteria: vec![],
+            })
+            .expect("todo");
+        store
+            .link_run(LinkRunRequest {
+                todo_id: todo.id,
+                agent_id: None,
+                session_id: "sess-1".into(),
+                workspace_root: PathBuf::from("/tmp/ws"),
+                worktree_path: None,
+                branch: None,
+                parent_session_id: None,
+                status: SessionStatus::Running,
+            })
+            .expect("link");
+
+        let wt = PathBuf::from("/tmp/ws/.nca/worktrees/sess-1");
+        let updated = store
+            .update_run_link_git_fields(
+                "sess-1",
+                Some(&wt),
+                Some("nca/sess-1"),
+                Some("parent-0"),
+            )
+            .expect("update");
+        assert!(updated);
+
+        let snap = store.load_snapshot().expect("snap");
+        let run = snap.run_links.iter().find(|r| r.session_id == "sess-1").unwrap();
+        assert_eq!(run.worktree_path.as_ref(), Some(&wt));
+        assert_eq!(run.branch.as_deref(), Some("nca/sess-1"));
+        assert_eq!(run.parent_session_id.as_deref(), Some("parent-0"));
+
+        let noop = store
+            .update_run_link_git_fields("missing", Some(&wt), None, None)
+            .expect("noop");
+        assert!(!noop);
     }
 }
