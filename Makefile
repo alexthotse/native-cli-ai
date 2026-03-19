@@ -17,9 +17,8 @@ build-%:
 
 # Install binaries to /usr/local/bin
 install: release
-	@echo "Installing nca and nca-monitor to /usr/local/bin..."
+	@echo "Installing nca to /usr/local/bin..."
 	cp target/release/nca /usr/local/bin/nca
-	cp target/release/nca-monitor /usr/local/bin/nca-monitor
 	@echo "Installed successfully!"
 
 # Run development build
@@ -50,7 +49,7 @@ clean:
 # Build and show binary sizes
 sizes: release
 	@echo "=== Binary Sizes ==="
-	@ls -lh target/release/nca target/release/nca-monitor 2>/dev/null || echo "Binaries not found"
+	@ls -lh target/release/nca 2>/dev/null || echo "Binary not found"
 
 # Run with custom config
 run-dev: dev

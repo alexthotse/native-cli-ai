@@ -12,30 +12,28 @@
 - Added persisted session metadata, token/cost tracking, and IPC socket support for live session control.
 - Updated the docs for CLI usage, parity progress, and architecture.
 
-## Next Up: Desktop Monitor
+## Next Up: Re-scope native desktop (optional)
 
-- Define the desktop MVP scope for `nca-monitor`.
-- Show live session list with running/completed/cancelled status.
-- Connect the monitor to session IPC sockets for live event streaming.
-- Add a session detail view for messages, tool calls, checkpoints, and costs.
-- Add a log viewer for NDJSON event history.
-- Add approval controls for ask-tier tool calls.
-- Add a diff panel for file-edit activity.
-- Add controls for attach, cancel, and resume from the desktop UI.
-- Surface model, token, and cost metadata clearly.
-- Make the monitor work well with multiple concurrent sessions.
+The former `nca-monitor` crate was removed. Before rebuilding:
 
-## CLI + Desktop Integration
+- Write a short PRD for the next desktop client (goals, non-goals, vs CLI).
+- Decide stack (egui/eframe is still a good Rust-native default).
+- Reuse existing **runtime IPC** (`IpcClient`) and session/orchestration persistence—no duplicate protocol.
 
-- Verify `spawn`, `status`, `attach`, and `cancel` work cleanly with the monitor.
-- Normalize event schemas used by both CLI and desktop.
-- Make session metadata robust for reconnects after app restarts.
+Backlog ideas for a future app (not committed scope):
+
+- Live session list; connect to session sockets for streaming `AgentEvent`s.
+- Session detail: messages, tool calls, approvals, diffs, costs.
+- Multi-session / reconnect after restart.
+
+## CLI + runtime hardening
+
+- Verify `spawn`, `status`, `attach`, and `cancel` under automation (`--json` / NDJSON).
+- Normalize event schemas for any future UI client.
 - Improve IPC error handling and reconnect behavior.
 
 ## Later
 
-- Add richer session search and filtering.
-- Add desktop notifications for approvals and finished runs.
-- Add tmux or multiplexer awareness in the monitor.
-- Add saved layouts and per-session tabs.
+- Add richer session search and filtering in CLI.
+- Tmux / multiplexer awareness (see Phase 3 in PRD).
 

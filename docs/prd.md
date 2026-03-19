@@ -2,7 +2,7 @@
 
 ## Product Vision
 
-A native-first, Rust-powered AI coding assistant that runs entirely in the terminal with zero JavaScript dependencies. It provides an interactive agent loop for code generation, file editing, command execution, and project understanding -- comparable in capability to Claude Code and OpenAI Codex CLI, but built as a single compiled binary with sub-100ms startup, low memory footprint, and an optional native desktop monitor for visual session control.
+A native-first, Rust-powered AI coding assistant that runs entirely in the terminal with zero JavaScript dependencies. It provides an interactive agent loop for code generation, file editing, command execution, and project understanding—comparable in capability to Claude Code and OpenAI Codex CLI—with sub-100ms startup, low memory footprint, and machine-readable streams for orchestration. A **separate native desktop client is not in the repo today**; it may be reintroduced later using the same runtime IPC.
 
 The product name is **nca** (native-cli-ai) throughout this document.
 
@@ -19,9 +19,8 @@ The product name is **nca** (native-cli-ai) throughout this document.
 
 ### Secondary: Team Lead / Reviewer
 
-- Wants to monitor multiple agent sessions running across worktrees.
-- Needs a dashboard to see what the AI is doing, approve dangerous operations, and review diffs before they land.
-- Uses the desktop monitor app alongside the terminal.
+- Wants to monitor multiple agent sessions running across worktrees (today: `nca sessions`, logs, attach, JSON output).
+- Needs visibility into what the AI is doing, approvals, and diffs—CLI + scripting until a new desktop scope exists.
 
 ### Tertiary: CI / Automation User
 
@@ -69,9 +68,9 @@ System behavior is guided by a layered harness prompt:
 
 Sessions are persisted to disk. `nca --resume` picks up the last session with full conversation context.
 
-### 5. Desktop Monitor
+### 5. Future native desktop client (TBD)
 
-A separate `nca-monitor` binary (egui) connects to one or more running nca sessions over a local Unix socket. It displays live terminal output, tool call history, diffs, token usage, and approval prompts.
+Not shipped in this repository. Any future app should connect over the **same Unix-socket IPC** as `nca attach` / `nca serve`, showing live events, tool history, diffs, usage, and approvals—scope to be rewritten from scratch.
 
 ### 6. Tmux / Multiplexer Integration
 
@@ -102,8 +101,7 @@ A separate `nca-monitor` binary (egui) connects to one or more running nca sessi
 - Markdown-rendered responses with syntax highlighting in the terminal
 - Token usage and cost tracking per session
 - Colored diffs for file changes
-- Native desktop monitor with company/project/todo/agent orchestration views
-- Local orchestration persistence for companies, projects, todos, agents, and linked runs
+- Local orchestration persistence for companies, projects, todos, agents, and linked runs (CLI-accessible; future desktop is out of repo)
 
 ### Out of Scope for MVP
 
@@ -119,7 +117,7 @@ A separate `nca-monitor` binary (egui) connects to one or more running nca sessi
 ## Non-Goals
 
 - nca is not an IDE. It does not provide LSP, autocomplete, or inline suggestions.
-- nca is not a chat UI. The monitor app is a control plane, not a conversation frontend.
+- nca is not a chat UI in the web sense; the CLI is the primary interactive surface today.
 - nca does not bundle or depend on Node.js, Python, or any non-Rust runtime.
 - nca does not aim for feature parity with Claude Code on day one. It ships a tight core and expands.
 
@@ -128,7 +126,7 @@ A separate `nca-monitor` binary (egui) connects to one or more running nca sessi
 ## Constraints
 
 - **Single binary**: The CLI ships as one statically-linked (where possible) Rust binary.
-- **No JS/webview in the default path**: The CLI and core library must never require a JavaScript runtime. The monitor app uses egui, not a webview.
+- **No JS/webview in the default path**: The CLI and core library must never require a JavaScript runtime. Any future desktop client should stay Rust-native (e.g. egui) unless explicitly decided otherwise.
 - **Workspace sandbox**: By default, file writes and shell commands are restricted to the current workspace root. Escaping requires explicit config.
 - **Async-first**: All I/O (network, filesystem, PTY) goes through tokio. No blocking the main thread.
 - **Offline-tolerant config**: Config, sessions, and custom instructions work without network access. Only LLM calls require connectivity.
@@ -201,7 +199,6 @@ nca --stream ndjson          # NDJSON event streaming
 nca --permission-mode plan   # Analysis only, no edits or shell execution
 nca --verbose                # Debug logging
 nca --json                   # Structured JSON output (for CI)
-nca-monitor                  # Launch desktop monitor (separate binary)
 ```
 
 ## Post-MVP Parity Roadmap
@@ -218,7 +215,6 @@ After the current parity batch, the next Claude Code-like features to add are:
 
 ## Open Questions
 
-- Should the event bus between CLI and monitor use Unix sockets, named pipes, or local TCP?
-- Should session files be plain JSON or a more compact binary format?
-- How should multi-workspace support work in the monitor app?
+- Should auxiliary clients (future UI) ever use something other than the current Unix-socket NDJSON protocol?
+- Should session files stay plain JSON or move to a more compact on-disk format?
 - What is the right granularity for the approval prompt (per-tool-call vs per-task)?

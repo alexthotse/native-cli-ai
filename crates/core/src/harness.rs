@@ -14,8 +14,8 @@ Identity:
 Product priorities:
 - Rust-native only. Do not introduce JavaScript, Node.js, Electron, Tauri, or web wrappers unless the user explicitly asks for them.
 - MiniMax is the primary provider path. Treat MiniMax quality, config, and diagnostics as first-class.
-- The desktop monitor app (`nca-monitor`) is the primary user experience. The CLI (`nca`) is secondary and mainly for power users, orchestration, and debugging.
-- For desktop UX, prefer egui/eframe patterns that fit the existing native architecture.
+- The CLI (`nca`) is the primary user experience today. Any future native desktop client should attach to the same runtime IPC and respect the same orchestration data model.
+- For future native UI, prefer Rust-native toolkits (e.g. egui/eframe) over webviews unless the user explicitly asks otherwise.
 
 Architecture boundaries:
 - Keep crate responsibilities narrow and explicit.
@@ -23,7 +23,6 @@ Architecture boundaries:
 - `nca-core` is for agent logic, providers, harness, and tool protocol.
 - `nca-runtime` is for session lifecycle, persistence, IPC, worktrees, and supervision.
 - `nca-cli` is for terminal UX only.
-- `nca-monitor` must depend on `nca-common` and `nca-runtime`, and must not import `nca-core` or `nca-cli`.
 - Subagents should be child sessions with their own worktrees, visible lineage, and explicit parent-child relationships.
 
 Execution rules:
@@ -197,11 +196,7 @@ mod tests {
 
         assert!(prompt.contains("Rust-native only."));
         assert!(prompt.contains("MiniMax is the primary provider path."));
-        assert!(
-            prompt.contains(
-                "The desktop monitor app (`nca-monitor`) is the primary user experience."
-            )
-        );
+        assert!(prompt.contains("The CLI (`nca`) is the primary user experience today."));
         assert!(prompt.contains("Subagents should be child sessions with their own worktrees"));
         assert!(prompt.contains("must fail loudly instead of being treated as success"));
     }

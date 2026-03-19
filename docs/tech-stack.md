@@ -184,7 +184,7 @@ This document records every dependency choice, the rationale behind it, and the 
 | `thiserror` | 2.x | Derive macros for error types |
 | `anyhow` | 1.x | Ergonomic error propagation in application code |
 
-**Convention**: Library crates (`core`, `common`, `runtime`) use `thiserror` for typed errors. Application crates (`cli`, `monitor`) use `anyhow` for convenience.
+**Convention**: Library crates (`core`, `common`, `runtime`) use `thiserror` for typed errors. The application crate (`cli`) uses `anyhow` for convenience.
 
 ---
 
@@ -197,23 +197,9 @@ This document records every dependency choice, the rationale behind it, and the 
 
 ---
 
-## Desktop Monitor (Phase 2)
+## Native desktop UI (not in workspace)
 
-| Crate | Version | Role |
-|-------|---------|------|
-| `egui` | 0.30.x | Immediate-mode GUI framework |
-| `eframe` | 0.30.x | egui integration for native windowing |
-
-**Why egui**: Pure Rust, no webview, no JS. GPU-accelerated via wgpu or glow. Excellent for dashboards, log viewers, and control panels. Fast iteration with hot-reload support.
-
-**Rejected alternatives**:
-
-| Framework | Reason for rejection |
-|-----------|---------------------|
-| **Tauri** | Requires a webview and JS/HTML frontend. Violates the native-first constraint. |
-| **Dioxus Desktop** | Currently uses system webview under the hood (built on Wry/Tao). Same webview concern as Tauri for our purposes. |
-| **GPUI** | Promising (powers Zed), but pre-1.0, macOS-focused, limited docs, and smaller community. Higher risk for a secondary deliverable. |
-| **iced** | Pure Rust and native, but slower to build complex UIs with. Less widget variety than egui. |
+The previous `nca-monitor` (egui/eframe) crate has been **removed** so the product can be re-scoped. When a new desktop client is defined, `docs/tech-stack.md` should record the chosen UI stack here (egui remains a strong candidate: pure Rust, no webview).
 
 ---
 
@@ -237,5 +223,4 @@ crates/cli      -> common, core, runtime, clap, ratatui, crossterm, reedline,
                    syntect, pulldown-cmark, colored, anyhow, tracing, tokio
 crates/runtime  -> common, core, portable-pty, tokio, serde_json, tracing,
                    thiserror, ignore, walkdir
-crates/monitor  -> common, egui, eframe, tokio, serde_json, tracing, anyhow
 ```

@@ -8,7 +8,7 @@ Full-screen ratatui session driven by `AgentEvent` (streaming, tools, cost), wit
 
 - **`--no-tui`**: legacy Reedline + line printer (`StreamMode::Human` still prints events).
 - **Default (TTY)**: TUI consumes the event channel; no duplicate stdout streaming.
-- **Approvals**: `cli-prompts` may fight alternate screen; use `--no-tui` or nca-monitor if prompts break.
+- **Approvals**: `cli-prompts` may fight alternate screen; use `--no-tui` if prompts break.
 
 ## Wiring
 

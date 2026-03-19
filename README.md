@@ -4,7 +4,7 @@
 
 Rust-native AI agent orchestration for people who want a real CLI worker, not another web wrapper.
 
-`nca` is built to harness the CLI as the execution layer for serious agent workflows: run foreground tasks, spawn background sessions, stream machine-readable events, attach later, and supervise everything from a native monitor. No JavaScript, no Electron, no browser dependency, just Rust and a sharp subprocess contract.
+`nca` is built to harness the CLI as the execution layer for serious agent workflows: run foreground tasks, spawn background sessions, stream machine-readable events, attach later, and orchestrate runs from the terminal or other control planes. No JavaScript, no Electron, no browser dependency—just Rust and a sharp subprocess contract.
 
 ## Why Try It
 
@@ -12,15 +12,14 @@ Rust-native AI agent orchestration for people who want a real CLI worker, not an
 - MiniMax-first by default, with compatibility for OpenAI, Anthropic/Claude, and OpenRouter.
 - Headless-friendly JSON and NDJSON surfaces for orchestration systems.
 - Background sessions, event logs, attachable runs, and isolated child-agent worktrees.
-- Native desktop monitor with session visibility instead of a bolted-on web dashboard.
+- JSON/NDJSON surfaces for orchestration and automation (no web dashboard in-repo today).
 
 ## Product Direction
 
 The current focus is not just "a coding CLI."
 
 - `nca` is being shaped into an orchestration-grade CLI worker.
-- `nca-monitor` is the native oversight surface for watching, reviewing, and steering those runs.
-- `nca-monitor` now supports two desktop directions on the same backend: `Company AI` and `Project AI`.
+- Session lifecycle, events, and approvals are exposed over the same runtime IPC the CLI uses—any future native desktop client can be rebuilt on top when scope is redefined.
 - The harness is opinionated toward plan-first execution, fail-loud behavior, and structured session lineage.
 
 If you want to wire an agent into a bigger control plane, this repo is aiming directly at that use case.
@@ -35,7 +34,6 @@ cargo build --release
 
 # Install locally
 cp target/release/nca /usr/local/bin/
-cp target/release/nca-monitor /usr/local/bin/
 
 # Configure MiniMax (default provider)
 export MINIMAX_API_KEY="your-api-key"
@@ -55,9 +53,6 @@ nca spawn --prompt "Inspect the repo and draft a plan"
 nca sessions
 nca status <session_id>
 nca attach <session_id>
-
-# Launch the native monitor
-nca-monitor
 ```
 
 The full-screen CLI cannot change your font from Rust—it follows your terminal’s monospace setting. For a modern look (and correct TUI alignment), see [CLI terminal fonts](docs/cli-terminal-fonts.md).
@@ -150,7 +145,6 @@ Current tool-running path supports:
 | `crates/core` | Agent loop, provider abstraction, harness, tools |
 | `crates/runtime` | IPC, session lifecycle, persistence, worktree/runtime glue |
 | `crates/cli` | Terminal entrypoint and machine-facing control plane |
-| `crates/monitor` | Native egui monitor for supervising sessions |
 
 ## Documentation
 

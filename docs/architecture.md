@@ -68,20 +68,6 @@ native-cli-ai/
 │   │       │   ├── diff.rs     # Colored diff display
 │   │       │   └── status.rs   # Cost bar, model info, mode indicator
 │   │       └── prompt.rs       # reedline-based input with completions
-│   │
-│   └── monitor/            # egui desktop app (Phase 2)
-│       ├── Cargo.toml
-│       └── src/
-│           ├── main.rs         # eframe launch
-│           ├── controller.rs   # LiveAttachController → runtime IpcClient
-│           ├── workspaces.rs   # WorkspaceRegistry view-model
-│           └── app/
-│               ├── mod.rs      # DesktopApp: orchestration, sessions, views, eframe::App
-│               ├── types.rs    # View, ActiveSession, forms, chat types
-│               ├── palette.rs  # egui color constants
-│               ├── widgets.rs  # Shared UI helpers (cards, config form, chat bubbles)
-│               ├── session_io.rs # SessionStore load + attach_controller
-│               └── git_worktree.rs # Git banner, .nca/worktrees, diff review, merge/remove
 │
 ├── docs/
 │   ├── prd.md
@@ -102,7 +88,6 @@ flowchart TD
   Core[core]
   Runtime[runtime]
   Cli[cli]
-  Monitor[monitor]
 
   Core --> Common
   Runtime --> Common
@@ -110,45 +95,34 @@ flowchart TD
   Cli --> Common
   Cli --> Core
   Cli --> Runtime
-  Monitor --> Common
-  Monitor --> Runtime
 ```
 
-Key constraint: `monitor` depends on `common` and `runtime` (for `IpcClient`, `WorktreeManager`, and `WorkspaceRegistry`). It never imports `core` or `cli`. The CLI delegates session lifecycle to the runtime `Supervisor`.
+The CLI delegates session lifecycle to the runtime `Supervisor`. **There is no `nca-monitor` crate in this workspace today**; a future native client would typically depend on `common` + `runtime` (for `IpcClient`, `WorktreeManager`, workspace registry) and avoid importing `core` or `cli`.
 
-## Desktop-First Architecture
+## CLI-first architecture
 
-The desktop app (`nca-monitor`) is the primary user interface. The CLI remains as a secondary/debug interface.
+The terminal app (`nca`) is the primary interface. Orchestration metadata and sessions remain local-first; use `nca` + JSON flags for automation until a new desktop scope exists.
 
 ```mermaid
 flowchart LR
-  DesktopApp[Desktop App] --> WorkspaceRegistry
-  DesktopApp --> CompanyProjectUi[CompanyProjectTodoAgent UI]
-  DesktopApp --> SessionHub[Session Index]
-  DesktopApp --> ReviewWorkbench
-  WorkspaceRegistry --> LocalMetadata["~/.nca/workspaces.json"]
-  CompanyProjectUi --> OrchestratorDb["~/.nca/orchestrator.db"]
-  SessionHub --> RuntimeService[Supervisor]
+  Cli[nca CLI] --> WorkspaceRegistry
+  Cli --> OrchestratorDb["~/.nca/orchestrator.db"]
+  Cli --> RuntimeService[Supervisor]
   RuntimeService --> AgentRuns[AgentLoop]
   RuntimeService --> EventStore[EventEnvelope logs]
   RuntimeService --> OrchestratorStore[SQLite orchestration store]
   RuntimeService --> WorktreeManager
-  ReviewWorkbench --> GitInspector[git diff/status]
-  ReviewWorkbench --> MergeActions[git merge/worktree]
-  CliSecondary[CLI] --> RuntimeService
+  WorkspaceRegistry --> LocalMetadata["~/.nca/workspaces.json"]
 ```
 
 ### Key modules
 
-- **`runtime::supervisor`**: Reusable session lifecycle manager. Both CLI and desktop use this.
+- **`runtime::supervisor`**: Session lifecycle manager used by the CLI (`nca serve`, attach, spawn, etc.).
 - **`runtime::workspace_registry`**: Persisted workspace index at `~/.nca/workspaces.json`.
 - **`runtime::orchestrator_store`**: SQLite-backed local store for companies, projects, todos, agents, mode preference, and run links.
 - **`runtime::worktree`**: Isolated git worktree creation, cleanup, and merge per agent run.
 - **`runtime::bash_tool`**: PTY-backed bash execution, registered by the supervisor.
-- **`monitor::workspaces`**: Desktop workspace view-model and navigation.
-- **`monitor::app::git_worktree`**: Git repo banner, NCA worktree list, per-file diff vs base branch, merge/remove confirmations (uses `runtime::worktree::WorktreeManager`).
-- **`monitor::app::session_io`**: Load session metas/transcripts from disk; attach to IPC socket.
-- **`OrchestrationService::update_run_link_git_fields`**: Syncs `worktree_path` / `branch` / `parent_session_id` on `run_links` when session JSON contains them (desktop reload hook).
+- **`OrchestrationService::update_run_link_git_fields`**: Syncs `worktree_path` / `branch` / `parent_session_id` on `run_links` when session JSON contains them.
 
 ---
 
@@ -217,19 +191,18 @@ The runtime exposes a Unix domain socket at `$XDG_RUNTIME_DIR/nca/<session-id>.s
 ### Protocol
 
 - **Transport**: Unix stream socket, newline-delimited JSON.
-- **Direction**: The runtime is the server. CLI and monitor are clients.
+- **Direction**: The runtime is the server. The CLI (and any future UI client) connects as a client.
 - **Messages**: Every `AgentEvent` from `common::event` is wrapped in `EventEnvelope` and serialized to all connected clients. Persisted logs and live IPC use the same machine-readable shape.
 
 ```mermaid
 flowchart LR
   CliProcess[cli] -->|"connect"| Socket["Unix socket"]
   Socket --> RuntimeServer[runtime::IpcServer]
-  MonitorProcess[monitor] -->|"connect"| Socket
   RuntimeServer -->|"broadcast events"| CliProcess
-  RuntimeServer -->|"broadcast events"| MonitorProcess
   CliProcess -->|"send commands"| RuntimeServer
-  MonitorProcess -->|"send commands"| RuntimeServer
 ```
+
+Future native clients would use the same socket protocol (`IpcClient` in `runtime::ipc`).
 
 ### Event Schema (common::event)
 
@@ -427,7 +400,7 @@ Config values are resolved with later sources overriding earlier ones:
 ## Build and Distribution
 
 - **Dev**: `cargo run -p nca-cli`
-- **Release**: `cargo build --release` produces two binaries: `nca` (cli) and `nca-monitor` (egui app).
-- **Install**: `cargo install --path crates/cli` and `cargo install --path crates/monitor`.
+- **Release**: `cargo build --release` produces `nca` (CLI).
+- **Install**: `cargo install --path crates/cli`.
 - **CI**: GitHub Actions with `cargo test --workspace`, `cargo clippy --workspace`, `cargo fmt --check`.
 - **Cross-compile**: Target `x86_64-unknown-linux-musl` for static Linux binaries. macOS and Windows use default targets.
