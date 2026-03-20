@@ -1,6 +1,6 @@
 //! Transcript + status driven by `AgentEvent`.
 
-use nca_common::event::AgentEvent;
+use nca_common::event::{AgentEvent, InteractiveQuestionPayload};
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -13,6 +13,8 @@ pub enum DisplayBlock {
         ok: bool,
         detail: String,
     },
+    /// Interactive `ask_question` prompt (options + suggested answer).
+    Question(InteractiveQuestionPayload),
     System(String),
     ErrorLine(String),
 }
@@ -25,6 +27,8 @@ pub struct TuiSessionState {
     pub cursor_char_idx: usize,
     /// Scroll offset in *lines* (flattened transcript).
     pub scroll_lines: usize,
+    /// When true, transcript stays pinned to the bottom as new output arrives.
+    pub transcript_follow_tail: bool,
     pub session_id: String,
     pub model: String,
     pub agent_profile: String,
@@ -37,6 +41,8 @@ pub struct TuiSessionState {
     pub should_exit: bool,
     /// Selected row in slash-command popup (↑↓ or click).
     pub slash_menu_index: usize,
+    /// When set, the composer answers this question (see status hint).
+    pub active_question: Option<InteractiveQuestionPayload>,
 }
 
 impl TuiSessionState {
@@ -52,6 +58,7 @@ impl TuiSessionState {
             input_buffer: String::new(),
             cursor_char_idx: 0,
             scroll_lines: 0,
+            transcript_follow_tail: true,
             session_id,
             model,
             agent_profile,
@@ -63,6 +70,7 @@ impl TuiSessionState {
             busy: false,
             should_exit: false,
             slash_menu_index: 0,
+            active_question: None,
         }
     }
 
@@ -167,6 +175,21 @@ impl TuiSessionState {
                 };
                 self.blocks.push(DisplayBlock::System(line));
             }
+            AgentEvent::QuestionRequested { question } => {
+                self.active_question = Some(question.clone());
+                self.blocks.push(DisplayBlock::Question(question.clone()));
+                // Bring the prompt into view when follow-tail is on (default).
+                self.transcript_follow_tail = true;
+            }
+            AgentEvent::QuestionResolved {
+                question_id,
+                selection,
+            } => {
+                self.active_question = None;
+                self.blocks.push(DisplayBlock::System(format!(
+                    "Answered question {question_id}: {selection:?}"
+                )));
+            }
             AgentEvent::CostUpdated {
                 input_tokens,
                 output_tokens,
@@ -220,5 +243,43 @@ fn truncate(s: &str, max: usize) -> String {
         t.to_string()
     } else {
         format!("{}…", t.chars().take(max.saturating_sub(1)).collect::<String>())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nca_common::event::{InteractiveQuestionPayload, QuestionOption, QuestionSelection};
+
+    #[test]
+    fn question_requested_sets_active_question() {
+        let mut st = TuiSessionState::new(
+            "session-x".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+        );
+        let q = InteractiveQuestionPayload {
+            question_id: "q-1".into(),
+            call_id: "c1".into(),
+            prompt: "Pick".into(),
+            options: vec![QuestionOption {
+                id: "a".into(),
+                label: "A".into(),
+            }],
+            allow_custom: true,
+            suggested_answer: "A".into(),
+        };
+        st.apply_event(&AgentEvent::QuestionRequested {
+            question: q.clone(),
+        });
+        assert_eq!(st.active_question.as_ref().map(|x| x.question_id.as_str()), Some("q-1"));
+        assert!(matches!(st.blocks.last(), Some(DisplayBlock::Question(_))));
+
+        st.apply_event(&AgentEvent::QuestionResolved {
+            question_id: "q-1".into(),
+            selection: QuestionSelection::Suggested,
+        });
+        assert!(st.active_question.is_none());
     }
 }

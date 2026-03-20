@@ -131,6 +131,7 @@ async fn run_service_session_with_startup(
         .take_event_rx()
         .ok_or_else(|| "missing event receiver".to_string())?;
     let approval_pending = handle.take_approval_pending();
+    let question_pending = handle.take_question_pending();
 
     let mut command_rx = None;
     let mut event_tx_ipc = None;
@@ -164,6 +165,7 @@ async fn run_service_session_with_startup(
         spawn_command_consumer_with_store(
             crx,
             approval_pending,
+            question_pending.clone(),
             None,
             supervisor.event_tx(),
             Some(prompt_tx.clone()),

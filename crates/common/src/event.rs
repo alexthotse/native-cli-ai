@@ -89,6 +89,49 @@ pub enum AgentEvent {
         child_session_id: String,
         status: String,
     },
+    /// User must pick an option, use the suggested answer, or enter custom text.
+    /// Emitted when the `ask_question` tool runs; answer via `AgentCommand::AnswerQuestion` or local CLI.
+    QuestionRequested {
+        question: InteractiveQuestionPayload,
+    },
+    /// Logged after the user (or orchestrator) answers a question.
+    QuestionResolved {
+        question_id: String,
+        selection: QuestionSelection,
+    },
+}
+
+/// One selectable row shown for an interactive question.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuestionOption {
+    pub id: String,
+    pub label: String,
+}
+
+/// Full question payload broadcast on the event bus and shown in the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InteractiveQuestionPayload {
+    pub question_id: String,
+    pub call_id: String,
+    pub prompt: String,
+    pub options: Vec<QuestionOption>,
+    #[serde(default = "default_allow_custom")]
+    pub allow_custom: bool,
+    /// Model-provided default; user can accept via suggested / `/auto-answer`.
+    pub suggested_answer: String,
+}
+
+fn default_allow_custom() -> bool {
+    true
+}
+
+/// How the user answered an interactive question.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QuestionSelection {
+    Option { option_id: String },
+    Custom { text: String },
+    Suggested,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +155,11 @@ pub enum AgentCommand {
     DenyToolCall {
         call_id: String,
     },
+    /// Submit an answer for the pending `ask_question` with matching `question_id`.
+    AnswerQuestion {
+        question_id: String,
+        selection: QuestionSelection,
+    },
     Cancel,
     Shutdown,
 }
@@ -130,4 +178,57 @@ pub enum AgentResponse {
         message: String,
     },
     Ok,
+}
+
+#[cfg(test)]
+mod interactive_question_serde_tests {
+    use super::*;
+
+    #[test]
+    fn question_requested_roundtrip() {
+        let q = InteractiveQuestionPayload {
+            question_id: "q-1".into(),
+            call_id: "call_1".into(),
+            prompt: "Pick one".into(),
+            options: vec![
+                QuestionOption {
+                    id: "a".into(),
+                    label: "Alpha".into(),
+                },
+                QuestionOption {
+                    id: "b".into(),
+                    label: "Beta".into(),
+                },
+            ],
+            allow_custom: true,
+            suggested_answer: "Alpha".into(),
+        };
+        let ev = AgentEvent::QuestionRequested { question: q.clone() };
+        let json = serde_json::to_string(&ev).expect("serialize");
+        let back: AgentEvent = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            AgentEvent::QuestionRequested { question } => assert_eq!(question, q),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn answer_question_command_roundtrip() {
+        let cmd = AgentCommand::AnswerQuestion {
+            question_id: "q-1".into(),
+            selection: QuestionSelection::Suggested,
+        };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let back: AgentCommand = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            AgentCommand::AnswerQuestion {
+                question_id,
+                selection,
+            } => {
+                assert_eq!(question_id, "q-1");
+                assert!(matches!(selection, QuestionSelection::Suggested));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 }

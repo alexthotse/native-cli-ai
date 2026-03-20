@@ -4,7 +4,7 @@ use crate::pty::PtyManager;
 use crate::session_store::SessionStore;
 use chrono::Utc;
 use nca_common::config::NcaConfig;
-use nca_common::event::{AgentCommand, AgentEvent, EndReason, EventEnvelope};
+use nca_common::event::{AgentCommand, AgentEvent, EndReason, EventEnvelope, QuestionSelection};
 use nca_common::session::{
     OrchestrationContext, SessionMeta, SessionSnapshot, SessionState, SessionStatus,
 };
@@ -17,6 +17,7 @@ use nca_core::provider::factory::build_provider;
 use nca_core::tools::ToolRegistry;
 use nca_core::tools::mcp::load_mcp_tools;
 use nca_core::tools::spawn_subagent::{SpawnRequest, SpawnSubagentTool};
+use nca_core::tools::AskQuestionTool;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,7 @@ pub struct Supervisor {
     ipc_handle: Option<IpcHandle>,
     event_rx: Option<mpsc::Receiver<AgentEvent>>,
     approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
+    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
     spawn_rx: Option<mpsc::Receiver<SpawnRequest>>,
     worktree_path: Option<PathBuf>,
     branch: Option<String>,
@@ -78,6 +80,7 @@ pub struct SupervisorHandle {
     event_rx: Option<mpsc::Receiver<AgentEvent>>,
     ipc_handle: Option<IpcHandle>,
     approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
+    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
     spawn_rx: Option<mpsc::Receiver<SpawnRequest>>,
 }
 
@@ -94,6 +97,12 @@ impl SupervisorHandle {
         &mut self,
     ) -> Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>> {
         self.approval_pending.take()
+    }
+
+    pub fn take_question_pending(
+        &mut self,
+    ) -> Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>> {
+        self.question_pending.take()
     }
 
     pub fn take_spawn_rx(&mut self) -> Option<mpsc::Receiver<SpawnRequest>> {
@@ -162,6 +171,12 @@ impl Supervisor {
         };
 
         let (event_tx, event_rx) = mpsc::channel(256);
+        let question_pending = Arc::new(Mutex::new(HashMap::new()));
+        tools.register(Box::new(AskQuestionTool::new(
+            event_tx.clone(),
+            question_pending.clone(),
+        )));
+
         let session_id = cfg.session_id.unwrap_or_else(generate_session_id);
         let session_store = SessionStore::new(workspace_root.join(&config.session.history_dir));
 
@@ -188,7 +203,7 @@ impl Supervisor {
             tools,
             approval,
             config.model.default_model.clone(),
-            event_tx,
+            event_tx.clone(),
             config.session.max_turns_per_run,
             config.session.max_tool_calls_per_turn,
             config.session.checkpoint_interval,
@@ -211,6 +226,7 @@ impl Supervisor {
             ipc_handle: Some(ipc_handle),
             event_rx: Some(event_rx),
             approval_pending,
+            question_pending: Some(question_pending),
             spawn_rx: Some(spawn_rx),
             worktree_path: None,
             branch: None,
@@ -289,6 +305,7 @@ impl Supervisor {
             event_rx: self.event_rx.take(),
             ipc_handle: self.ipc_handle.take(),
             approval_pending: self.approval_pending.take(),
+            question_pending: self.question_pending.take(),
             spawn_rx: self.spawn_rx.take(),
         }
     }
@@ -537,11 +554,13 @@ pub fn spawn_event_fanout(
 pub fn spawn_command_consumer(
     command_rx: mpsc::UnboundedReceiver<AgentCommand>,
     approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
+    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
     cancel_tx: Option<oneshot::Sender<()>>,
 ) -> tokio::task::JoinHandle<()> {
     spawn_command_consumer_with_store(
         command_rx,
         approval_pending,
+        question_pending,
         cancel_tx,
         None,
         None,
@@ -559,6 +578,7 @@ pub enum SessionControlCommand {
 pub fn spawn_command_consumer_with_store(
     mut command_rx: mpsc::UnboundedReceiver<AgentCommand>,
     approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
+    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
     cancel_tx: Option<oneshot::Sender<()>>,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
     prompt_tx: Option<mpsc::UnboundedSender<String>>,
@@ -625,6 +645,18 @@ pub fn spawn_command_consumer_with_store(
                                 content,
                             })
                             .await;
+                    }
+                }
+                AgentCommand::AnswerQuestion {
+                    question_id,
+                    selection,
+                } => {
+                    if let Some(ref qp) = question_pending {
+                        if let Ok(mut m) = qp.lock() {
+                            if let Some(tx) = m.remove(&question_id) {
+                                let _ = tx.send(selection);
+                            }
+                        }
                     }
                 }
             }
@@ -1085,6 +1117,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some(prompt_tx),
             Some(control_tx),
         );
@@ -1100,6 +1133,43 @@ mod tests {
             .expect("prompt should be forwarded")
             .expect("prompt channel should remain open");
         assert_eq!(received, "hello from ipc");
+
+        let _ = cmd_tx.send(AgentCommand::Shutdown);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn answer_question_resolves_pending_channel() {
+        use nca_common::event::QuestionSelection;
+
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let pending: Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = oneshot::channel();
+        pending.lock().unwrap().insert("q-1".into(), tx);
+
+        let task = spawn_command_consumer_with_store(
+            cmd_rx,
+            None,
+            Some(pending.clone()),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        cmd_tx
+            .send(AgentCommand::AnswerQuestion {
+                question_id: "q-1".into(),
+                selection: QuestionSelection::Suggested,
+            })
+            .unwrap();
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), rx)
+            .await
+            .expect("timeout")
+            .expect("channel");
+        assert!(matches!(got, QuestionSelection::Suggested));
 
         let _ = cmd_tx.send(AgentCommand::Shutdown);
         task.abort();
