@@ -43,8 +43,8 @@ pub enum TuiCmd {
     Exit,
     /// Open the branch picker popup.
     OpenBranchPicker,
-    /// Switch to the branch at the given index in the picker list.
-    SwitchBranch(usize),
+    /// Switch to the given branch name.
+    SwitchBranch(String),
     /// Create a new branch with the given name and switch to it.
     CreateBranch(String),
 }
@@ -86,6 +86,52 @@ fn filter_slash_commands(buffer: &str) -> Vec<&'static str> {
         .copied()
         .filter(|c| c.starts_with(buffer))
         .collect()
+}
+
+fn branch_filter_text(query: &str) -> &str {
+    query.trim().strip_prefix('/').unwrap_or(query.trim())
+}
+
+fn filtered_branch_indices(branches: &[String], query: &str) -> Vec<usize> {
+    let filter = branch_filter_text(query).to_ascii_lowercase();
+    if filter.is_empty() {
+        return (0..branches.len()).collect();
+    }
+    branches
+        .iter()
+        .enumerate()
+        .filter(|(_, branch)| branch.to_ascii_lowercase().contains(&filter))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+fn branch_picker_enter_command(
+    branches: &[String],
+    query: &str,
+    selected_filtered_idx: usize,
+) -> Option<TuiCmd> {
+    let raw_query = query.trim();
+    let branch_name = branch_filter_text(raw_query).trim();
+    let filtered = filtered_branch_indices(branches, raw_query);
+
+    if raw_query.starts_with('/') {
+        return (!branch_name.is_empty()).then(|| TuiCmd::CreateBranch(branch_name.to_string()));
+    }
+
+    if !branch_name.is_empty() {
+        if let Some((idx, _)) = branches
+            .iter()
+            .enumerate()
+            .find(|(_, branch)| branch.eq_ignore_ascii_case(branch_name))
+        {
+            return Some(TuiCmd::SwitchBranch(branches[idx].clone()));
+        }
+    }
+
+    filtered
+        .get(selected_filtered_idx)
+        .copied()
+        .map(|idx| TuiCmd::SwitchBranch(branches[idx].clone()))
 }
 
 fn filter_command_palette(query: &str) -> Vec<&'static str> {
@@ -224,7 +270,12 @@ pub fn git_list_branches(workspace: &Path) -> Vec<String> {
     git_run(&["branch", "--no-color"], Some(workspace))
         .map(|out| {
             out.lines()
-                .map(|l| l.trim_start_matches("* ").trim().to_string())
+                .map(|l| {
+                    l.trim_start_matches("* ")
+                        .trim_start_matches("+ ")
+                        .trim()
+                        .to_string()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1292,14 +1343,7 @@ pub fn run_blocking(
                 // Branch picker popup.
                 if g.branch_picker_open {
                     let branches = &g.branch_picker_branches;
-                    let filtered: Vec<&String> = if g.branch_picker_query.is_empty() {
-                        branches.iter().collect()
-                    } else {
-                        branches
-                            .iter()
-                            .filter(|b| b.contains(&g.branch_picker_query))
-                            .collect()
-                    };
+                    let filtered = filtered_branch_indices(branches, &g.branch_picker_query);
 
                     let popup_h = (filtered.len().min(12) as u16).saturating_add(6).max(8);
                     let popup_area = centered_rect(area, 36, popup_h);
@@ -1330,9 +1374,10 @@ pub fn run_blocking(
                             .branch_picker_index
                             .saturating_sub(n_show.saturating_sub(1))
                             .min(filtered.len().saturating_sub(n_show));
-                        for (i, branch) in filtered[list_scroll..list_scroll + n_show].iter().enumerate() {
-                            let global = list_scroll + i;
-                            let style = if global == g.branch_picker_index {
+                        for (i, branch_idx) in filtered[list_scroll..list_scroll + n_show].iter().enumerate() {
+                            let filtered_idx = list_scroll + i;
+                            let branch = &branches[*branch_idx];
+                            let style = if filtered_idx == g.branch_picker_index {
                                 Style::default()
                                     .fg(Color::Black)
                                     .bg(theme::USER)
@@ -1522,35 +1567,31 @@ pub fn run_blocking(
                                 g.close_branch_picker();
                             }
                             (KeyCode::Up, _) => {
-                                if !g.branch_picker_branches.is_empty() {
-                                    g.branch_picker_index = g
-                                        .branch_picker_index
-                                        .saturating_sub(1);
+                                if !filtered_branch_indices(
+                                    &g.branch_picker_branches,
+                                    &g.branch_picker_query,
+                                )
+                                .is_empty()
+                                {
+                                    g.branch_picker_index = g.branch_picker_index.saturating_sub(1);
                                 }
                             }
                             (KeyCode::Down, _) => {
-                                let n = g.branch_picker_branches.len();
+                                let n = filtered_branch_indices(
+                                    &g.branch_picker_branches,
+                                    &g.branch_picker_query,
+                                )
+                                .len();
                                 if n > 0 {
                                     g.branch_picker_index = (g.branch_picker_index + 1) % n;
                                 }
                             }
                             (KeyCode::Enter, _) => {
-                                // Extract data before dropping the guard.
-                                let query_text = g.branch_picker_query.trim().to_string();
-                                let idx = g.branch_picker_index;
-                                let name = g.branch_picker_branches.get(idx).cloned();
-                                let cmd = if !query_text.is_empty() && !query_text.starts_with('/') {
-                                    // Create new branch with typed name.
-                                    Some(TuiCmd::CreateBranch(query_text))
-                                } else if let Some(ref n) = name {
-                                    if !n.is_empty() {
-                                        Some(TuiCmd::SwitchBranch(idx))
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                };
+                                let cmd = branch_picker_enter_command(
+                                    &g.branch_picker_branches,
+                                    &g.branch_picker_query,
+                                    g.branch_picker_index,
+                                );
                                 g.close_branch_picker();
                                 if let Some(c) = cmd {
                                     drop(g);
@@ -1559,22 +1600,16 @@ pub fn run_blocking(
                             }
                             (KeyCode::Backspace, _) => {
                                 g.branch_picker_query.pop();
-                                // Reset selection to first match
-                                let query = &g.branch_picker_query;
-                                g.branch_picker_index = g
-                                    .branch_picker_branches
-                                    .iter()
-                                    .position(|b| b.contains(query))
-                                    .unwrap_or(0);
+                                let filtered = filtered_branch_indices(
+                                    &g.branch_picker_branches,
+                                    &g.branch_picker_query,
+                                );
+                                g.branch_picker_index =
+                                    g.branch_picker_index.min(filtered.len().saturating_sub(1));
                             }
                             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                                 g.branch_picker_query.push(c);
-                                let query = &g.branch_picker_query;
-                                g.branch_picker_index = g
-                                    .branch_picker_branches
-                                    .iter()
-                                    .position(|b| b.contains(query))
-                                    .unwrap_or(0);
+                                g.branch_picker_index = 0;
                             }
                             _ => {}
                         }
@@ -1843,7 +1878,9 @@ pub fn run_blocking(
 
 #[cfg(test)]
 mod approval_parse_tests {
-    use super::parse_approval_verdict;
+    use super::{
+        TuiCmd, branch_picker_enter_command, filtered_branch_indices, parse_approval_verdict,
+    };
 
     #[test]
     fn parses_yes_with_punctuation_and_synonyms() {
@@ -1868,5 +1905,37 @@ mod approval_parse_tests {
         assert_eq!(parse_approval_verdict("maybe"), None);
         assert_eq!(parse_approval_verdict("nope"), None);
         assert_eq!(parse_approval_verdict(""), None);
+    }
+
+    #[test]
+    fn branch_picker_switches_exact_match_from_typed_query() {
+        let branches = vec![
+            "interactive-question".into(),
+            "main".into(),
+            "self-autoresearch".into(),
+        ];
+        let cmd = branch_picker_enter_command(&branches, "main", 0);
+        assert!(matches!(cmd, Some(TuiCmd::SwitchBranch(name)) if name == "main"));
+    }
+
+    #[test]
+    fn branch_picker_creates_only_with_slash_prefix() {
+        let branches = vec!["main".into()];
+        let cmd = branch_picker_enter_command(&branches, "/feature-x", 0);
+        assert!(matches!(cmd, Some(TuiCmd::CreateBranch(name)) if name == "feature-x"));
+    }
+
+    #[test]
+    fn branch_picker_filters_case_insensitively() {
+        let branches = vec!["Main".into(), "feature/login".into()];
+        assert_eq!(filtered_branch_indices(&branches, "main"), vec![0]);
+        assert_eq!(filtered_branch_indices(&branches, "LOGIN"), vec![1]);
+    }
+
+    #[test]
+    fn branch_picker_switches_selected_filtered_branch_by_name() {
+        let branches = vec!["alpha".into(), "main".into(), "main-fix".into()];
+        let cmd = branch_picker_enter_command(&branches, "mai", 1);
+        assert!(matches!(cmd, Some(TuiCmd::SwitchBranch(name)) if name == "main-fix"));
     }
 }

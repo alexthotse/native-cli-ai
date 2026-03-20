@@ -2,8 +2,9 @@ use crate::prompt::NcaPrompt;
 use crate::runner::{SessionRuntime, dispatch_question_answer, dispatch_tool_approval};
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::{
-    DisplayBlock, TuiCmd, TuiSessionState, replay_event_log_into_state, run_blocking,
-    spawn_tui_bridge, git_current_branch, git_list_branches, git_switch_branch, git_create_branch,
+    DisplayBlock, TuiCmd, TuiSessionState, git_create_branch, git_current_branch,
+    git_list_branches, git_switch_branch, replay_event_log_into_state, run_blocking,
+    spawn_tui_bridge,
 };
 use nca_common::config::PermissionMode;
 use nca_common::event::{EndReason, QuestionSelection};
@@ -1157,31 +1158,24 @@ impl Repl {
                 TuiCmd::OpenBranchPicker => {
                     let workspace = self.runtime.workspace_root();
                     let branches = git_list_branches(workspace);
-                    let current = git_current_branch(workspace)
-                        .unwrap_or_default();
+                    let current = git_current_branch(workspace).unwrap_or_default();
                     if let Ok(mut g) = tui_state.lock() {
                         g.open_branch_picker(branches, &current);
                         g.set_current_branch(&current);
                     }
                 }
-                TuiCmd::SwitchBranch(idx) => {
+                TuiCmd::SwitchBranch(name) => {
                     let workspace = self.runtime.workspace_root();
-                    let branch = if let Ok(g) = tui_state.lock() {
-                        g.branch_picker_branches.get(idx).cloned()
-                    } else {
-                        None
-                    };
-                    if let Some(name) = branch {
-                        if git_switch_branch(workspace, &name) {
-                            if let Ok(mut g) = tui_state.lock() {
-                                g.set_current_branch(&name);
-                                g.blocks.push(DisplayBlock::System(
-                                    format!("Switched to branch: {}", name),
-                                ));
-                            }
-                        } else if let Ok(mut g) = tui_state.lock() {
-                            g.push_error(format!("Failed to switch to branch: {}", name));
+                    if git_switch_branch(workspace, &name) {
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.set_current_branch(&name);
+                            g.blocks.push(DisplayBlock::System(format!(
+                                "Switched to branch: {}",
+                                name
+                            )));
                         }
+                    } else if let Ok(mut g) = tui_state.lock() {
+                        g.push_error(format!("Failed to switch to branch: {}", name));
                     }
                 }
                 TuiCmd::CreateBranch(name) => {
@@ -1189,9 +1183,10 @@ impl Repl {
                     if git_create_branch(workspace, &name) {
                         if let Ok(mut g) = tui_state.lock() {
                             g.set_current_branch(&name);
-                            g.blocks.push(DisplayBlock::System(
-                                format!("Created and switched to branch: {}", name),
-                            ));
+                            g.blocks.push(DisplayBlock::System(format!(
+                                "Created and switched to branch: {}",
+                                name
+                            )));
                         }
                     } else if let Ok(mut g) = tui_state.lock() {
                         g.push_error(format!("Failed to create branch: {}", name));

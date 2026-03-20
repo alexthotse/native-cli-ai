@@ -1,11 +1,11 @@
 mod approval_prompts;
+mod cli_index;
 mod prompt;
 mod repl;
 mod runner;
 mod slash_commands;
 mod stream;
 mod tui;
-mod cli_index;
 
 use crate::approval_prompts::InteractiveIpcApprovalHandler;
 use clap::CommandFactory;

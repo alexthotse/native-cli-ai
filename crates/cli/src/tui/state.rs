@@ -402,9 +402,8 @@ impl TuiSessionState {
                         running: true,
                     });
                 }
-                self.blocks.push(DisplayBlock::System(format!(
-                    "↳ {short}… · {phase} · {d}"
-                )));
+                self.blocks
+                    .push(DisplayBlock::System(format!("↳ {short}… · {phase} · {d}")));
             }
             AgentEvent::ChildSessionCompleted {
                 child_session_id,
@@ -431,11 +430,7 @@ impl TuiSessionState {
 }
 
 fn short_session_prefix(id: &str) -> &str {
-    if id.len() > 8 {
-        &id[..8]
-    } else {
-        id
-    }
+    if id.len() > 8 { &id[..8] } else { id }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -459,12 +454,11 @@ fn format_tool_input_for_display(tool: &str, value: &Value) -> String {
 }
 
 fn format_spawn_subagent_input(v: &Value) -> String {
-    let task = v
-        .get("task")
-        .and_then(|t| t.as_str())
-        .unwrap_or("")
-        .trim();
-    let wt = v.get("use_worktree").and_then(|b| b.as_bool()).unwrap_or(true);
+    let task = v.get("task").and_then(|t| t.as_str()).unwrap_or("").trim();
+    let wt = v
+        .get("use_worktree")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(true);
     let n_focus = v
         .get("focus_files")
         .and_then(|a| a.as_array())

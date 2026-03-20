@@ -101,11 +101,11 @@ pub async fn run_index_show(workspace_root: &Path, json: bool) -> anyhow::Result
     if json {
         println!("{}", serde_json::to_string_pretty(&v)?);
     } else {
-        let n = v["commands"]
-            .as_array()
-            .map(|a| a.len())
-            .unwrap_or(0);
-        println!("CLI index  schema={}  workspace_id={}", v["schema_version"], v["workspace_id"]);
+        let n = v["commands"].as_array().map(|a| a.len()).unwrap_or(0);
+        println!(
+            "CLI index  schema={}  workspace_id={}",
+            v["schema_version"], v["workspace_id"]
+        );
         println!("path: {}", path.display());
         println!("commands (entries): {n}");
     }
@@ -156,7 +156,10 @@ fn flags_from_command(cmd: &ClapCommand) -> Vec<IndexFlag> {
         .map(|a| IndexFlag {
             long: a.get_long().map(str::to_string),
             short: a.get_short().map(|c| c.to_string()),
-            help: a.get_help().map(|h| h.to_string()).filter(|s| !s.is_empty()),
+            help: a
+                .get_help()
+                .map(|h| h.to_string())
+                .filter(|s| !s.is_empty()),
         })
         .collect()
 }
@@ -174,7 +177,9 @@ fn handler_hint(path_key: &str) -> String {
         "cancel" => "crates/cli/src/main.rs: cancel_session".into(),
         "skills" => "crates/cli/src/main.rs: list_skills".into(),
         "mcp" => "crates/cli/src/main.rs: list_mcp_servers".into(),
-        "memory/list" | "memory/add" => "crates/cli/src/main.rs: show_memory / add_memory_note".into(),
+        "memory/list" | "memory/add" => {
+            "crates/cli/src/main.rs: show_memory / add_memory_note".into()
+        }
         "models" => "crates/cli/src/main.rs: show_models".into(),
         "doctor" => "crates/cli/src/main.rs: show_doctor".into(),
         "config" => "crates/cli/src/main.rs: show_config".into(),
@@ -182,7 +187,9 @@ fn handler_hint(path_key: &str) -> String {
         "autoresearch/once" => "crates/cli/src/main.rs: autoresearch_once".into(),
         "index/build" | "index/show" => "crates/cli/src/cli_index.rs".into(),
         _ if path_key.starts_with("memory/") => "crates/cli/src/main.rs: try_main (Memory)".into(),
-        _ if path_key.starts_with("autoresearch/") => "crates/cli/src/main.rs: autoresearch_once".into(),
+        _ if path_key.starts_with("autoresearch/") => {
+            "crates/cli/src/main.rs: autoresearch_once".into()
+        }
         _ => "crates/cli/src/main.rs: try_main".into(),
     }
 }
