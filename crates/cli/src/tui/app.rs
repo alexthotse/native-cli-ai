@@ -1,5 +1,7 @@
 //! Full-screen session TUI: transcript, streaming assistant, composer.
 
+use std::path::Path;
+
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::state::{ApprovalRequest, DisplayBlock, TuiSessionState};
 use crossterm::{
@@ -39,6 +41,12 @@ pub enum TuiCmd {
     CycleAgent,
     CancelTurn,
     Exit,
+    /// Open the branch picker popup.
+    OpenBranchPicker,
+    /// Switch to the given branch name.
+    SwitchBranch(String),
+    /// Create a new branch with the given name and switch to it.
+    CreateBranch(String),
 }
 
 mod theme {
@@ -78,6 +86,52 @@ fn filter_slash_commands(buffer: &str) -> Vec<&'static str> {
         .copied()
         .filter(|c| c.starts_with(buffer))
         .collect()
+}
+
+fn branch_filter_text(query: &str) -> &str {
+    query.trim().strip_prefix('/').unwrap_or(query.trim())
+}
+
+fn filtered_branch_indices(branches: &[String], query: &str) -> Vec<usize> {
+    let filter = branch_filter_text(query).to_ascii_lowercase();
+    if filter.is_empty() {
+        return (0..branches.len()).collect();
+    }
+    branches
+        .iter()
+        .enumerate()
+        .filter(|(_, branch)| branch.to_ascii_lowercase().contains(&filter))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+fn branch_picker_enter_command(
+    branches: &[String],
+    query: &str,
+    selected_filtered_idx: usize,
+) -> Option<TuiCmd> {
+    let raw_query = query.trim();
+    let branch_name = branch_filter_text(raw_query).trim();
+    let filtered = filtered_branch_indices(branches, raw_query);
+
+    if raw_query.starts_with('/') {
+        return (!branch_name.is_empty()).then(|| TuiCmd::CreateBranch(branch_name.to_string()));
+    }
+
+    if !branch_name.is_empty() {
+        if let Some((idx, _)) = branches
+            .iter()
+            .enumerate()
+            .find(|(_, branch)| branch.eq_ignore_ascii_case(branch_name))
+        {
+            return Some(TuiCmd::SwitchBranch(branches[idx].clone()));
+        }
+    }
+
+    filtered
+        .get(selected_filtered_idx)
+        .copied()
+        .map(|idx| TuiCmd::SwitchBranch(branches[idx].clone()))
 }
 
 fn filter_command_palette(query: &str) -> Vec<&'static str> {
@@ -139,6 +193,20 @@ fn layout_chunks(area: Rect, slash_h: u16) -> (Rect, Rect, Option<Rect>, Rect) {
     }
 }
 
+fn sidebar_fit(s: &str, max_chars: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max_chars {
+        t.to_string()
+    } else {
+        format!(
+            "{}…",
+            t.chars()
+                .take(max_chars.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
+}
+
 fn layout_with_sidebar(area: Rect) -> (Rect, Option<Rect>) {
     if area.width < SIDEBAR_MIN_TOTAL_WIDTH {
         return (area, None);
@@ -175,6 +243,52 @@ fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
         && col < r.x.saturating_add(r.width)
         && row >= r.y
         && row < r.y.saturating_add(r.height)
+}
+
+/// Run a git command synchronously and return stdout.
+fn git_run(args: &[&str], cwd: Option<&Path>) -> Option<String> {
+    let cwd = cwd?;
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Get the current git branch name for `workspace`.
+pub fn git_current_branch(workspace: &Path) -> Option<String> {
+    git_run(&["rev-parse", "--abbrev-ref", "HEAD"], Some(workspace))
+}
+
+/// List local git branches for `workspace`. Current branch is marked with `*`.
+pub fn git_list_branches(workspace: &Path) -> Vec<String> {
+    git_run(&["branch", "--no-color"], Some(workspace))
+        .map(|out| {
+            out.lines()
+                .map(|l| {
+                    l.trim_start_matches("* ")
+                        .trim_start_matches("+ ")
+                        .trim()
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Create a new branch `name` and check it out in `workspace`.
+pub fn git_create_branch(workspace: &Path, name: &str) -> bool {
+    git_run(&["checkout", "-b", name], Some(workspace)).is_some()
+}
+
+/// Switch to an existing branch `name` in `workspace`.
+pub fn git_switch_branch(workspace: &Path, name: &str) -> bool {
+    git_run(&["checkout", name], Some(workspace)).is_some()
 }
 
 pub fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -633,12 +747,40 @@ fn render_approval_block(
         lines,
         hits,
         Line::from(Span::styled(
-            " Reply with y/yes or n/no, then press Enter.",
+            " Reply: y / yes / ok to approve · n / no / deny to deny · or Ctrl+Y / Ctrl+N · /approve / /deny",
             Style::default().fg(theme::MUTED),
         )),
         None,
     );
     push_transcript_line(lines, hits, Line::default(), None);
+}
+
+/// Parse user approval input (flexible: punctuation, synonyms, `/approve` style).
+fn parse_approval_verdict(line: &str) -> Option<bool> {
+    let mut s = line.trim().to_lowercase();
+    while matches!(
+        s.chars().last(),
+        Some('.' | '!' | '?' | ',' | ';' | ':' | '"' | '\'')
+    ) {
+        s.pop();
+    }
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Slash commands (handled before this in caller for passthrough; bare forms here too)
+    match s {
+        "/approve" | "/y" | "/yes" | "/ok" => return Some(true),
+        "/deny" | "/n" | "/no" => return Some(false),
+        _ => {}
+    }
+    let word = s.split_whitespace().next()?;
+    match word {
+        "y" | "yes" | "ok" | "okay" | "approve" | "approved" | "allow" | "1" | "true" => Some(true),
+        "n" | "no" | "deny" | "denied" | "reject" | "rejected" | "decline" | "declined" | "0"
+        | "false" => Some(false),
+        _ => None,
+    }
 }
 
 fn parse_md_line(line: &str) -> Line<'static> {
@@ -774,13 +916,24 @@ pub fn run_blocking(
                     let sections = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Length(9),
+                            Constraint::Length(12),
                             Constraint::Length(8),
-                            Constraint::Min(7),
+                            Constraint::Min(10),
                         ])
                         .split(sidebar);
 
+                    let ws_line = if g.workspace_display.is_empty() {
+                        "—".to_string()
+                    } else {
+                        sidebar_fit(&g.workspace_display, 26)
+                    };
                     let session_lines = vec![
+                        Line::from(Span::styled(
+                            "workspace",
+                            Style::default().fg(theme::MUTED),
+                        )),
+                        Line::from(ws_line),
+                        Line::default(),
                         Line::from(format!("session {}", &g.session_id[..8.min(g.session_id.len())])),
                         Line::from(format!("model   {}", g.model)),
                         Line::from(format!("agent   {}", g.agent_profile)),
@@ -834,27 +987,67 @@ pub fn run_blocking(
                         .wrap(Wrap { trim: false });
                     frame.render_widget(usage_block, sections[1]);
 
-                    let todo_lines = vec![
-                        Line::from(Span::styled(
-                            "task/todo area reserved",
-                            Style::default().fg(theme::TEXT),
-                        )),
-                        Line::default(),
-                        Line::from(Span::styled(
-                            "future sidebar ideas:",
-                            Style::default()
-                                .fg(theme::MUTED)
-                                .add_modifier(Modifier::BOLD),
-                        )),
-                        Line::from("current task summary"),
-                        Line::from("checklist items"),
-                        Line::from("blockers and notes"),
-                        Line::default(),
-                        Line::from(Span::styled(
-                            "Ctrl+P opens commands",
-                            Style::default().fg(theme::USER),
-                        )),
-                    ];
+                    let mut todo_lines: Vec<Line> = vec![Line::from(Span::styled(
+                        "sub-agents",
+                        Style::default()
+                            .fg(theme::MUTED)
+                            .add_modifier(Modifier::BOLD),
+                    ))];
+                    if g.subagents.is_empty() {
+                        todo_lines.push(Line::from(Span::styled(
+                            "none (spawn shows here)",
+                            Style::default().fg(theme::MUTED),
+                        )));
+                    } else {
+                        for row in g.subagents.iter().take(8) {
+                            let dot = if row.running { "●" } else { "○" };
+                            let id8 = sidebar_fit(&row.id, 8);
+                            let ph = sidebar_fit(&row.phase, 11);
+                            todo_lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("{dot} "),
+                                    Style::default().fg(if row.running {
+                                        theme::WARN
+                                    } else {
+                                        theme::MUTED
+                                    }),
+                                ),
+                                Span::styled(format!("{id8} "), Style::default().fg(theme::TEXT)),
+                                Span::styled(ph, Style::default().fg(theme::TOOL)),
+                            ]));
+                            if !row.detail.is_empty() {
+                                todo_lines.push(Line::from(Span::styled(
+                                    format!("  {}", sidebar_fit(&row.detail, 26)),
+                                    Style::default().fg(theme::MUTED),
+                                )));
+                            }
+                            if !row.task.is_empty() && row.task != "(sub-agent)" {
+                                todo_lines.push(Line::from(Span::styled(
+                                    format!("  {}", sidebar_fit(&row.task, 26)),
+                                    Style::default().fg(theme::TEXT),
+                                )));
+                            }
+                        }
+                    }
+                    todo_lines.push(Line::default());
+                    todo_lines.push(Line::from(Span::styled(
+                        "dev",
+                        Style::default()
+                            .fg(theme::MUTED)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    todo_lines.push(Line::from(Span::styled(
+                        ".nca/sessions",
+                        Style::default().fg(theme::USER),
+                    )));
+                    todo_lines.push(Line::from(Span::styled(
+                        "docs/research/",
+                        Style::default().fg(theme::USER),
+                    )));
+                    todo_lines.push(Line::from(Span::styled(
+                        "Ctrl+P commands",
+                        Style::default().fg(theme::MUTED),
+                    )));
                     let todo_block = Paragraph::new(Text::from(todo_lines))
                         .block(
                             Block::default()
@@ -905,6 +1098,31 @@ pub fn run_blocking(
                     format!("{:02}:{:02}", elapsed / 60, elapsed % 60),
                     Style::default().fg(theme::MUTED),
                 );
+
+                // Compute the character-cell x-offset before any borrow of `g` escapes into `status_spans`.
+                let branch_char_offset = 4 + g.model.len() + 4 + g.agent_profile.len() + 4;
+                let branch_text = if g.current_branch.is_empty() {
+                    String::new()
+                } else {
+                    format!("⎇ {}", g.current_branch)
+                };
+                let branch_span_style = Style::default()
+                    .fg(theme::TOOL)
+                    .add_modifier(Modifier::UNDERLINED);
+
+                // Store the branch chip bounds for click hit-testing.
+                if st_r.width > branch_char_offset as u16 && !branch_text.is_empty() {
+                    let chip_len = branch_text.len() as u16;
+                    g.branch_chip_bounds = Some(Rect::new(
+                        st_r.x + branch_char_offset as u16,
+                        st_r.y,
+                        chip_len.min(st_r.width - branch_char_offset as u16),
+                        1,
+                    ));
+                } else {
+                    g.branch_chip_bounds = None;
+                }
+
                 let mut status_spans = vec![
                     busy,
                     approval_hint,
@@ -913,6 +1131,9 @@ pub fn run_blocking(
                     Span::styled(&g.model, Style::default().fg(theme::USER)),
                     Span::raw(" │ "),
                     Span::styled(&g.agent_profile, Style::default().fg(theme::ASSISTANT)),
+                    Span::raw(" │ "),
+                    // branch_text borrow ends before next mutable use of `g` below
+                    Span::styled(branch_text, branch_span_style),
                     Span::raw(" │ "),
                     perm_span,
                 ];
@@ -1015,7 +1236,7 @@ pub fn run_blocking(
 
                 let hint = if g.active_approval.is_some() {
                     Line::from(Span::styled(
-                        "Approval pending: type y/yes to approve or n/no to deny, then press Enter",
+                        "Approval: y / yes / ok · n / no / deny · Ctrl+Y approve · Ctrl+N deny · /approve / /deny · other /commands still work",
                         Style::default().fg(theme::ERROR),
                     ))
                 } else if g.active_question.is_some() {
@@ -1118,6 +1339,75 @@ pub fn run_blocking(
                         .wrap(Wrap { trim: false });
                     frame.render_widget(popup, popup_area);
                 }
+
+                // Branch picker popup.
+                if g.branch_picker_open {
+                    let branches = &g.branch_picker_branches;
+                    let filtered = filtered_branch_indices(branches, &g.branch_picker_query);
+
+                    let popup_h = (filtered.len().min(12) as u16).saturating_add(6).max(8);
+                    let popup_area = centered_rect(area, 36, popup_h);
+
+                    let mut popup_lines = vec![
+                        Line::from(vec![
+                            Span::styled(" Branch ", Style::default().fg(theme::MUTED).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                if g.branch_picker_query.is_empty() {
+                                    "".to_string()
+                                } else {
+                                    format!(": {}", g.branch_picker_query)
+                                },
+                                Style::default().fg(theme::TEXT),
+                            ),
+                        ]),
+                        Line::default(),
+                    ];
+
+                    if filtered.is_empty() {
+                        popup_lines.push(Line::from(Span::styled(
+                            "  (no branches — type a name to create)",
+                            Style::default().fg(theme::MUTED),
+                        )));
+                    } else {
+                        let n_show = filtered.len().min(12);
+                        let list_scroll = g
+                            .branch_picker_index
+                            .saturating_sub(n_show.saturating_sub(1))
+                            .min(filtered.len().saturating_sub(n_show));
+                        for (i, branch_idx) in filtered[list_scroll..list_scroll + n_show].iter().enumerate() {
+                            let filtered_idx = list_scroll + i;
+                            let branch = &branches[*branch_idx];
+                            let style = if filtered_idx == g.branch_picker_index {
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(theme::USER)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme::TEXT)
+                            };
+                            let mark = if branch.as_str() == g.current_branch { " *" } else { "" };
+                            popup_lines.push(Line::from(Span::styled(format!(" {branch}{mark}"), style)));
+                        }
+                    }
+
+                    popup_lines.push(Line::default());
+                    popup_lines.push(Line::from(Span::styled(
+                        " Enter switch  /name new  Esc close",
+                        Style::default().fg(theme::MUTED),
+                    )));
+
+                    frame.render_widget(ClearWidget, popup_area);
+                    let popup = Paragraph::new(Text::from(popup_lines))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(theme::BORDER))
+                                .title(Span::styled(" git branch ", Style::default().fg(theme::MUTED))),
+                        )
+                        .style(Style::default().bg(theme::SURFACE))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(popup, popup_area);
+                }
             })?;
         }
 
@@ -1206,6 +1496,15 @@ pub fn run_blocking(
                             }
                         }
                     }
+
+                    // Check click on branch chip in status bar.
+                    if let Some(bounds) = g.branch_chip_bounds {
+                        if rect_contains(bounds, m.column, m.row)
+                            && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                        {
+                            let _ = cmd_tx.send(TuiCmd::OpenBranchPicker);
+                        }
+                    }
                 }
                 Event::Key(key) => {
                     if g.command_palette_open {
@@ -1261,6 +1560,62 @@ pub fn run_blocking(
                         continue;
                     }
 
+                    // Branch picker keyboard handling.
+                    if g.branch_picker_open {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => {
+                                g.close_branch_picker();
+                            }
+                            (KeyCode::Up, _) => {
+                                if !filtered_branch_indices(
+                                    &g.branch_picker_branches,
+                                    &g.branch_picker_query,
+                                )
+                                .is_empty()
+                                {
+                                    g.branch_picker_index = g.branch_picker_index.saturating_sub(1);
+                                }
+                            }
+                            (KeyCode::Down, _) => {
+                                let n = filtered_branch_indices(
+                                    &g.branch_picker_branches,
+                                    &g.branch_picker_query,
+                                )
+                                .len();
+                                if n > 0 {
+                                    g.branch_picker_index = (g.branch_picker_index + 1) % n;
+                                }
+                            }
+                            (KeyCode::Enter, _) => {
+                                let cmd = branch_picker_enter_command(
+                                    &g.branch_picker_branches,
+                                    &g.branch_picker_query,
+                                    g.branch_picker_index,
+                                );
+                                g.close_branch_picker();
+                                if let Some(c) = cmd {
+                                    drop(g);
+                                    let _ = cmd_tx.send(c);
+                                }
+                            }
+                            (KeyCode::Backspace, _) => {
+                                g.branch_picker_query.pop();
+                                let filtered = filtered_branch_indices(
+                                    &g.branch_picker_branches,
+                                    &g.branch_picker_query,
+                                );
+                                g.branch_picker_index =
+                                    g.branch_picker_index.min(filtered.len().saturating_sub(1));
+                            }
+                            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                                g.branch_picker_query.push(c);
+                                g.branch_picker_index = 0;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     match (key.code, key.modifiers) {
                         (KeyCode::Esc, _) => {
                             g.should_exit = true;
@@ -1292,6 +1647,30 @@ pub fn run_blocking(
                                 let _ = cmd_tx.send(TuiCmd::CycleAgent);
                             }
                         }
+                        (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                            if let Some(req) = g.active_approval.clone() {
+                                let call_id = req.call_id.clone();
+                                g.input_buffer.clear();
+                                g.cursor_char_idx = 0;
+                                drop(g);
+                                if let Some(ref tx) = approval_answer_tx {
+                                    let _ = tx.send((call_id, true));
+                                }
+                                continue;
+                            }
+                        }
+                        (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                            if let Some(req) = g.active_approval.clone() {
+                                let call_id = req.call_id.clone();
+                                g.input_buffer.clear();
+                                g.cursor_char_idx = 0;
+                                drop(g);
+                                if let Some(ref tx) = approval_answer_tx {
+                                    let _ = tx.send((call_id, false));
+                                }
+                                continue;
+                            }
+                        }
                         (KeyCode::Enter, _) => {
                             let line = std::mem::take(&mut g.input_buffer);
                             g.cursor_char_idx = 0;
@@ -1299,12 +1678,36 @@ pub fn run_blocking(
                             let active_approval = g.active_approval.clone();
                             let active_q = g.active_question.clone();
                             if let Some(req) = active_approval {
-                                let verdict = match line.trim().to_ascii_lowercase().as_str() {
-                                    "y" | "yes" => Some(true),
-                                    "n" | "no" => Some(false),
-                                    _ => None,
-                                };
-                                if let Some(approved) = verdict {
+                                let t = line.trim();
+                                if t.is_empty() {
+                                    g.blocks.push(DisplayBlock::System(
+                                        "Empty line — type y or n (or yes/no, ok, deny). Ctrl+Y = approve, Ctrl+N = deny."
+                                            .into(),
+                                    ));
+                                    continue;
+                                }
+                                if t.starts_with('/') {
+                                    let lower = t.to_lowercase();
+                                    let slash_verdict = match lower.as_str() {
+                                        "/approve" | "/y" | "/yes" | "/ok" => Some(true),
+                                        "/deny" | "/n" | "/no" => Some(false),
+                                        _ => None,
+                                    };
+                                    if let Some(approved) = slash_verdict {
+                                        let call_id = req.call_id.clone();
+                                        drop(g);
+                                        if let Some(ref tx) = approval_answer_tx {
+                                            let _ = tx.send((call_id, approved));
+                                        } else {
+                                            let _ = cmd_tx.send(TuiCmd::CancelTurn);
+                                        }
+                                        continue;
+                                    }
+                                    drop(g);
+                                    let _ = cmd_tx.send(TuiCmd::Submit(line));
+                                    continue;
+                                }
+                                if let Some(approved) = parse_approval_verdict(t) {
                                     let call_id = req.call_id.clone();
                                     drop(g);
                                     if let Some(ref tx) = approval_answer_tx {
@@ -1315,7 +1718,8 @@ pub fn run_blocking(
                                     continue;
                                 }
                                 g.blocks.push(DisplayBlock::System(
-                                    "Invalid approval answer: use y/yes or n/no.".into(),
+                                    "Could not parse approval — try y, n, yes, no, ok, deny, or Ctrl+Y / Ctrl+N."
+                                        .into(),
                                 ));
                                 continue;
                             }
@@ -1470,4 +1874,68 @@ pub fn run_blocking(
     restore_terminal();
     let _ = execute!(stdout(), MoveToColumn(0));
     Ok(())
+}
+
+#[cfg(test)]
+mod approval_parse_tests {
+    use super::{
+        TuiCmd, branch_picker_enter_command, filtered_branch_indices, parse_approval_verdict,
+    };
+
+    #[test]
+    fn parses_yes_with_punctuation_and_synonyms() {
+        assert_eq!(parse_approval_verdict("yes"), Some(true));
+        assert_eq!(parse_approval_verdict("Yes."), Some(true));
+        assert_eq!(parse_approval_verdict("  OK! "), Some(true));
+        assert_eq!(parse_approval_verdict("approve"), Some(true));
+        assert_eq!(parse_approval_verdict("/approve"), Some(true));
+        assert_eq!(parse_approval_verdict("/y"), Some(true));
+    }
+
+    #[test]
+    fn parses_no_and_deny() {
+        assert_eq!(parse_approval_verdict("n"), Some(false));
+        assert_eq!(parse_approval_verdict("no."), Some(false));
+        assert_eq!(parse_approval_verdict("deny"), Some(false));
+        assert_eq!(parse_approval_verdict("/deny"), Some(false));
+    }
+
+    #[test]
+    fn rejects_unknown() {
+        assert_eq!(parse_approval_verdict("maybe"), None);
+        assert_eq!(parse_approval_verdict("nope"), None);
+        assert_eq!(parse_approval_verdict(""), None);
+    }
+
+    #[test]
+    fn branch_picker_switches_exact_match_from_typed_query() {
+        let branches = vec![
+            "interactive-question".into(),
+            "main".into(),
+            "self-autoresearch".into(),
+        ];
+        let cmd = branch_picker_enter_command(&branches, "main", 0);
+        assert!(matches!(cmd, Some(TuiCmd::SwitchBranch(name)) if name == "main"));
+    }
+
+    #[test]
+    fn branch_picker_creates_only_with_slash_prefix() {
+        let branches = vec!["main".into()];
+        let cmd = branch_picker_enter_command(&branches, "/feature-x", 0);
+        assert!(matches!(cmd, Some(TuiCmd::CreateBranch(name)) if name == "feature-x"));
+    }
+
+    #[test]
+    fn branch_picker_filters_case_insensitively() {
+        let branches = vec!["Main".into(), "feature/login".into()];
+        assert_eq!(filtered_branch_indices(&branches, "main"), vec![0]);
+        assert_eq!(filtered_branch_indices(&branches, "LOGIN"), vec![1]);
+    }
+
+    #[test]
+    fn branch_picker_switches_selected_filtered_branch_by_name() {
+        let branches = vec!["alpha".into(), "main".into(), "main-fix".into()];
+        let cmd = branch_picker_enter_command(&branches, "mai", 1);
+        assert!(matches!(cmd, Some(TuiCmd::SwitchBranch(name)) if name == "main-fix"));
+    }
 }

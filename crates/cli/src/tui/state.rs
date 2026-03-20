@@ -37,6 +37,16 @@ pub struct ApprovalRequest {
     pub input: String,
 }
 
+/// One row in the sidebar for a child / sub-agent session.
+#[derive(Debug, Clone)]
+pub struct SubagentRow {
+    pub id: String,
+    pub task: String,
+    pub phase: String,
+    pub detail: String,
+    pub running: bool,
+}
+
 pub struct TuiSessionState {
     pub blocks: Vec<DisplayBlock>,
     /// In-progress assistant text (shown below committed blocks until finalized).
@@ -48,6 +58,10 @@ pub struct TuiSessionState {
     /// When true, transcript stays pinned to the bottom as new output arrives.
     pub transcript_follow_tail: bool,
     pub session_id: String,
+    /// Workspace root (from `SessionStarted`), for sidebar context.
+    pub workspace_display: String,
+    /// Live view of spawned sub-agents (updated from child activity events).
+    pub subagents: Vec<SubagentRow>,
     pub model: String,
     pub agent_profile: String,
     pub permission_mode: String,
@@ -67,6 +81,18 @@ pub struct TuiSessionState {
     pub active_approval: Option<ApprovalRequest>,
     /// When set, the composer answers this question (see status hint).
     pub active_question: Option<InteractiveQuestionPayload>,
+    /// Current git branch name (updated on branch switch).
+    pub current_branch: String,
+    /// Branch picker popup state.
+    pub branch_picker_open: bool,
+    /// Filter text in the branch picker.
+    pub branch_picker_query: String,
+    /// Selected index in the branch picker list.
+    pub branch_picker_index: usize,
+    /// List of branches for the picker (refreshed on open).
+    pub branch_picker_branches: Vec<String>,
+    /// Bounding rect of the branch chip in the status bar (for click hit-testing).
+    pub branch_chip_bounds: Option<ratatui::layout::Rect>,
 }
 
 impl TuiSessionState {
@@ -84,6 +110,8 @@ impl TuiSessionState {
             scroll_lines: 0,
             transcript_follow_tail: true,
             session_id,
+            workspace_display: String::new(),
+            subagents: Vec::new(),
             model,
             agent_profile,
             permission_mode,
@@ -98,6 +126,12 @@ impl TuiSessionState {
             command_palette_query: String::new(),
             active_approval: None,
             active_question: None,
+            current_branch: String::new(),
+            branch_picker_open: false,
+            branch_picker_query: String::new(),
+            branch_picker_index: 0,
+            branch_picker_branches: Vec::new(),
+            branch_chip_bounds: None,
         }
     }
 
@@ -109,8 +143,48 @@ impl TuiSessionState {
         self.blocks.push(DisplayBlock::ErrorLine(msg));
     }
 
+    /// Approval/question prompts from replayed history are transcript only.
+    /// The live pending channels are not restored on resume, so these must not
+    /// keep the input box in approval/answer mode.
+    pub fn clear_replayed_interaction_state(&mut self) {
+        self.active_approval = None;
+        self.active_question = None;
+    }
+
+    pub fn clear_active_approval_if_matches(&mut self, call_id: &str) {
+        if self
+            .active_approval
+            .as_ref()
+            .is_some_and(|req| req.call_id == call_id)
+        {
+            self.active_approval = None;
+        }
+    }
+
     pub fn set_agent_profile(&mut self, label: &str) {
         self.agent_profile = label.to_string();
+    }
+
+    pub fn set_current_branch(&mut self, branch: &str) {
+        self.current_branch = branch.to_string();
+    }
+
+    pub fn open_branch_picker(&mut self, branches: Vec<String>, current: &str) {
+        self.branch_picker_branches = branches;
+        self.branch_picker_query.clear();
+        self.branch_picker_index = self
+            .branch_picker_branches
+            .iter()
+            .position(|b| b == current)
+            .unwrap_or(0);
+        self.branch_picker_open = true;
+    }
+
+    pub fn close_branch_picker(&mut self) {
+        self.branch_picker_open = false;
+        self.branch_picker_query.clear();
+        self.branch_picker_branches.clear();
+        self.branch_picker_index = 0;
     }
 
     pub fn set_permission_mode(&mut self, mode: &str) {
@@ -128,10 +202,13 @@ impl TuiSessionState {
     pub fn apply_event(&mut self, e: &AgentEvent) {
         match e {
             AgentEvent::SessionStarted {
-                session_id, model, ..
+                session_id,
+                model,
+                workspace,
             } => {
                 self.session_id = session_id.clone();
                 self.model = model.clone();
+                self.workspace_display = workspace.display().to_string();
             }
             AgentEvent::MessageReceived { role, content } => {
                 if role == "user" {
@@ -156,7 +233,7 @@ impl TuiSessionState {
                 self.blocks.push(DisplayBlock::ToolRunning {
                     name: tool.clone(),
                     call_id: call_id.clone(),
-                    input: format_tool_input(input),
+                    input: format_tool_input_for_display(tool, input),
                 });
             }
             AgentEvent::ToolCallCompleted { call_id, output } => {
@@ -278,33 +355,82 @@ impl TuiSessionState {
                 task,
                 ..
             } => {
-                let short = if child_session_id.len() > 8 {
-                    &child_session_id[..8]
+                let short = short_session_prefix(child_session_id);
+                let task_s = truncate(task, 200);
+                if let Some(row) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|r| r.id == *child_session_id)
+                {
+                    row.task = task_s.clone();
+                    row.running = true;
                 } else {
-                    child_session_id.as_str()
-                };
+                    self.subagents.push(SubagentRow {
+                        id: child_session_id.clone(),
+                        task: task_s.clone(),
+                        phase: String::new(),
+                        detail: String::new(),
+                        running: true,
+                    });
+                }
                 self.blocks.push(DisplayBlock::System(format!(
-                    "Sub-agent {short}: {}",
+                    "Sub-agent {short}… — {}",
                     truncate(task, 80)
                 )));
+            }
+            AgentEvent::ChildSessionActivity {
+                child_session_id,
+                phase,
+                detail,
+            } => {
+                let short = short_session_prefix(child_session_id);
+                let d = truncate(detail, 120);
+                if let Some(row) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|r| r.id == *child_session_id)
+                {
+                    row.phase = phase.clone();
+                    row.detail = d.clone();
+                    row.running = true;
+                } else {
+                    self.subagents.push(SubagentRow {
+                        id: child_session_id.clone(),
+                        task: "(sub-agent)".into(),
+                        phase: phase.clone(),
+                        detail: d.clone(),
+                        running: true,
+                    });
+                }
+                self.blocks
+                    .push(DisplayBlock::System(format!("↳ {short}… · {phase} · {d}")));
             }
             AgentEvent::ChildSessionCompleted {
                 child_session_id,
                 status,
                 ..
             } => {
-                let short = if child_session_id.len() > 8 {
-                    &child_session_id[..8]
-                } else {
-                    child_session_id.as_str()
-                };
+                let short = short_session_prefix(child_session_id);
+                if let Some(row) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|r| r.id == *child_session_id)
+                {
+                    row.running = false;
+                    row.phase = "done".into();
+                    row.detail = status.clone();
+                }
                 self.blocks.push(DisplayBlock::System(format!(
-                    "Sub-agent {short} done: {status}"
+                    "Sub-agent {short}… done: {status}"
                 )));
             }
             _ => {}
         }
     }
+}
+
+fn short_session_prefix(id: &str) -> &str {
+    if id.len() > 8 { &id[..8] } else { id }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -319,6 +445,33 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn format_tool_input_for_display(tool: &str, value: &Value) -> String {
+    if tool == "spawn_subagent" {
+        format_spawn_subagent_input(value)
+    } else {
+        format_tool_input(value)
+    }
+}
+
+fn format_spawn_subagent_input(v: &Value) -> String {
+    let task = v.get("task").and_then(|t| t.as_str()).unwrap_or("").trim();
+    let wt = v
+        .get("use_worktree")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(true);
+    let n_focus = v
+        .get("focus_files")
+        .and_then(|a| a.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    format!(
+        "task:\n{}\nworktree: {} · focus_files: {}",
+        truncate(task, 500),
+        wt,
+        n_focus
+    )
+}
+
 fn format_tool_input(value: &Value) -> String {
     if let Some(raw) = value.as_str() {
         if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
@@ -331,7 +484,9 @@ fn format_tool_input(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nca_common::event::{InteractiveQuestionPayload, QuestionOption, QuestionSelection};
+    use nca_common::event::{
+        AgentEvent, InteractiveQuestionPayload, QuestionOption, QuestionSelection,
+    };
 
     #[test]
     fn question_requested_sets_active_question() {
@@ -369,6 +524,31 @@ mod tests {
     }
 
     #[test]
+    fn child_session_activity_updates_subagent_row() {
+        let mut st = TuiSessionState::new(
+            "session-x".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+        );
+        st.apply_event(&AgentEvent::ChildSessionSpawned {
+            parent_session_id: "session-x".into(),
+            child_session_id: "child-abc".into(),
+            task: "do the thing".into(),
+            workspace: std::path::PathBuf::from("/tmp"),
+            branch: None,
+        });
+        assert_eq!(st.subagents.len(), 1);
+        st.apply_event(&AgentEvent::ChildSessionActivity {
+            child_session_id: "child-abc".into(),
+            phase: "read_file".into(),
+            detail: "src/lib.rs".into(),
+        });
+        assert_eq!(st.subagents[0].phase, "read_file");
+        assert_eq!(st.subagents[0].detail, "src/lib.rs");
+    }
+
+    #[test]
     fn approval_requested_promotes_running_tool_with_input() {
         let mut st = TuiSessionState::new(
             "session-x".into(),
@@ -396,5 +576,34 @@ mod tests {
             }
             other => panic!("expected approval block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn clear_replayed_interaction_state_drops_stale_prompts() {
+        let mut st = TuiSessionState::new(
+            "session-x".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+        );
+        st.active_approval = Some(ApprovalRequest {
+            call_id: "call-1".into(),
+            tool: "execute_bash".into(),
+            description: "approve".into(),
+            input: "{}".into(),
+        });
+        st.active_question = Some(InteractiveQuestionPayload {
+            question_id: "q-1".into(),
+            call_id: "call-2".into(),
+            prompt: "Pick".into(),
+            options: vec![],
+            allow_custom: true,
+            suggested_answer: String::new(),
+        });
+
+        st.clear_replayed_interaction_state();
+
+        assert!(st.active_approval.is_none());
+        assert!(st.active_question.is_none());
     }
 }

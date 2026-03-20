@@ -1,7 +1,11 @@
 use crate::prompt::NcaPrompt;
 use crate::runner::{SessionRuntime, dispatch_question_answer, dispatch_tool_approval};
 use crate::slash_commands::SLASH_COMMANDS;
-use crate::tui::{DisplayBlock, TuiCmd, TuiSessionState, run_blocking, spawn_tui_bridge};
+use crate::tui::{
+    DisplayBlock, TuiCmd, TuiSessionState, git_create_branch, git_current_branch,
+    git_list_branches, git_switch_branch, replay_event_log_into_state, run_blocking,
+    spawn_tui_bridge,
+};
 use nca_common::config::PermissionMode;
 use nca_common::event::{EndReason, QuestionSelection};
 use nca_core::skills::SkillCatalog;
@@ -68,6 +72,7 @@ impl ReplOutput<'_> {
 }
 
 /// Special input prefixes
+#[allow(dead_code)]
 const INPUT_PREFIXES: &[&str] = &[
     "!",  // Bash mode - run shell command directly
     "@",  // File reference - fuzzy file search
@@ -104,6 +109,7 @@ impl AgentProfile {
     }
 
     /// Get system prompt modifier for this profile
+    #[allow(dead_code)]
     pub fn system_modifier(&self) -> &'static str {
         match self {
             AgentProfile::Build => "",
@@ -131,6 +137,7 @@ impl AgentProfile {
     }
 
     /// Get reedline suggestion color for this profile
+    #[allow(dead_code)]
     pub fn style(&self) -> &'static str {
         match self {
             AgentProfile::Build => "",
@@ -190,6 +197,23 @@ impl Repl {
     /// Run the interactive REPL until the user exits.
     pub async fn run(&mut self) -> anyhow::Result<()> {
         let mut editor = self.build_editor()?;
+
+        let _spawn_task = {
+            let spawn_rx = self.runtime.take_spawn_rx();
+            let event_tx = self.runtime.event_tx();
+            if let Some(srx) = spawn_rx {
+                Some(nca_runtime::supervisor::spawn_subagent_consumer(
+                    srx,
+                    self.runtime.session_id().to_string(),
+                    self.runtime.workspace_root().to_path_buf(),
+                    self.runtime.config().clone(),
+                    self.runtime.messages().to_vec(),
+                    event_tx,
+                ))
+            } else {
+                None
+            }
+        };
 
         if self.run_mode {
             self.print_banner();
@@ -401,12 +425,13 @@ impl Repl {
     }
 
     /// Open external editor for long prompts (Ctrl+G style)
+    #[allow(dead_code)]
     async fn open_external_editor(&self) -> Option<String> {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
 
         // Create a temp file
         let temp_path = std::env::temp_dir().join("nca-prompt-XXXXXX");
-        let temp_path_str = temp_path.to_string_lossy().to_string();
+        let _temp_path_str = temp_path.to_string_lossy().to_string();
 
         // Use mktemp-like approach
         let temp_file = format!("{}.txt", std::process::id());
@@ -479,6 +504,10 @@ impl Repl {
 
         match command {
             "/q" | "/quit" | "/exit" => return Ok(false),
+            "/stop" => {
+                self.runtime.request_cancel();
+                out.println("[stop] cancelling current turn…");
+            }
             "/help" => {
                 out.print(
                     "nca Interactive Mode - Claude Code inspired shortcuts:\n\n\
@@ -515,6 +544,7 @@ impl Repl {
                        /sessions                  List local session IDs\n\
                        /permissions [mode]        Show or set permission mode\n\
                        /permission-bypass [on|off|toggle]  Quick bypass toggle (default: toggle)\n\
+                       /stop                      Cancel the current running turn\n\
                        /exit                      Exit repl\n\n\
                      KEYBOARD SHORTCUTS:\n\
                        Tab                         Switch agent profile (@build -> @plan -> @review)\n\
@@ -1009,11 +1039,21 @@ impl Repl {
             perm,
         )));
 
+        let log_path = self.runtime.event_log_path();
+        replay_event_log_into_state(&log_path, &tui_state).await;
+
+        // Populate the git branch name immediately so it appears on first render.
+        let workspace = self.runtime.workspace_root();
+        if let Some(branch) = git_current_branch(workspace) {
+            if let Ok(mut g) = tui_state.lock() {
+                g.set_current_branch(&branch);
+            }
+        }
+
         let rx = self
             .runtime
             .take_event_rx()
             .ok_or_else(|| anyhow::anyhow!("internal: event channel already taken"))?;
-        let log_path = self.runtime.event_log_path();
         let ipc = self.runtime.take_ipc_handle();
         let approval = self.runtime.take_ipc_approval_pending();
         let question = self.runtime.question_pending();
@@ -1025,6 +1065,23 @@ impl Repl {
             question.clone(),
             tui_state.clone(),
         );
+
+        let _spawn_task = {
+            let spawn_rx = self.runtime.take_spawn_rx();
+            let event_tx = self.runtime.event_tx();
+            if let Some(srx) = spawn_rx {
+                Some(nca_runtime::supervisor::spawn_subagent_consumer(
+                    srx,
+                    self.runtime.session_id().to_string(),
+                    self.runtime.workspace_root().to_path_buf(),
+                    self.runtime.config().clone(),
+                    self.runtime.messages().to_vec(),
+                    event_tx,
+                ))
+            } else {
+                None
+            }
+        };
 
         // Answers must bypass the main `cmd_rx` loop: while `run_turn` is blocked inside
         // `ask_question`, that task never receives `TuiCmd::Submit` or `QuestionAnswer`.
@@ -1047,8 +1104,9 @@ impl Repl {
             while let Some((call_id, approved)) = approval_rx.recv().await {
                 if !dispatch_tool_approval(&approval_dispatch, &call_id, approved) {
                     if let Ok(mut g) = approval_state.lock() {
+                        g.clear_active_approval_if_matches(&call_id);
                         g.push_error(
-                            "failed to resolve approval (expired or already handled)".into(),
+                            "approval was no longer pending; cleared stale approval state".into(),
                         );
                     }
                 }
@@ -1096,6 +1154,43 @@ impl Repl {
                 }
                 TuiCmd::CancelTurn => {
                     self.runtime.request_cancel();
+                }
+                TuiCmd::OpenBranchPicker => {
+                    let workspace = self.runtime.workspace_root();
+                    let branches = git_list_branches(workspace);
+                    let current = git_current_branch(workspace).unwrap_or_default();
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.open_branch_picker(branches, &current);
+                        g.set_current_branch(&current);
+                    }
+                }
+                TuiCmd::SwitchBranch(name) => {
+                    let workspace = self.runtime.workspace_root();
+                    if git_switch_branch(workspace, &name) {
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.set_current_branch(&name);
+                            g.blocks.push(DisplayBlock::System(format!(
+                                "Switched to branch: {}",
+                                name
+                            )));
+                        }
+                    } else if let Ok(mut g) = tui_state.lock() {
+                        g.push_error(format!("Failed to switch to branch: {}", name));
+                    }
+                }
+                TuiCmd::CreateBranch(name) => {
+                    let workspace = self.runtime.workspace_root();
+                    if git_create_branch(workspace, &name) {
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.set_current_branch(&name);
+                            g.blocks.push(DisplayBlock::System(format!(
+                                "Created and switched to branch: {}",
+                                name
+                            )));
+                        }
+                    } else if let Ok(mut g) = tui_state.lock() {
+                        g.push_error(format!("Failed to create branch: {}", name));
+                    }
                 }
                 TuiCmd::QuestionAnswer(selection) => {
                     let qid = if let Ok(g) = tui_state.lock() {
@@ -1280,7 +1375,7 @@ impl Completer for Repl {
             let bash_commands = [
                 "git", "ls", "cat", "find", "grep", "npm", "cargo", "make", "docker", "curl",
             ];
-            let prefix = line.trim_start_matches('!');
+            let _prefix = line.trim_start_matches('!');
             for cmd in bash_commands {
                 let full = format!("!{}", cmd);
                 if full.starts_with(line) {

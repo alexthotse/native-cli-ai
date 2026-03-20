@@ -89,6 +89,14 @@ pub enum AgentEvent {
         child_session_id: String,
         status: String,
     },
+    /// Live activity from a child session (tools, checkpoints, nested spawns), for parent UI.
+    ChildSessionActivity {
+        child_session_id: String,
+        /// Short label, e.g. tool name or checkpoint phase.
+        phase: String,
+        /// One-line detail for the sidebar/transcript.
+        detail: String,
+    },
     /// User must pick an option, use the suggested answer, or enter custom text.
     /// Emitted when the `ask_question` tool runs; answer via `AgentCommand::AnswerQuestion` or local CLI.
     QuestionRequested {
@@ -98,6 +106,15 @@ pub enum AgentEvent {
     QuestionResolved {
         question_id: String,
         selection: QuestionSelection,
+    },
+    /// Warning that context is approaching limit.
+    ContextWarning {
+        message: String,
+    },
+    /// Context compaction/summarization event.
+    ContextCompaction {
+        phase: String,
+        message: String,
     },
 }
 

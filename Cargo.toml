@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/runtime",
     "crates/cli",
+    "crates/autoresearch",
 ]
 
 [workspace.package]
@@ -35,11 +36,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # External crates
 cli-prompts = "0.1"
 
-# Common crate (internal)
+# Internal crates
 nca-common = { path = "crates/common" }
 nca-core = { path = "crates/core" }
 nca-runtime = { path = "crates/runtime" }
+nca-autoresearch = { path = "crates/autoresearch" }

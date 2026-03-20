@@ -261,6 +261,82 @@ pub fn global_config_path() -> Option<PathBuf> {
     env::var_os("HOME").map(|home| PathBuf::from(home).join(".nca/config.toml"))
 }
 
+/// `$HOME/.nca` when `HOME` is set.
+pub fn nca_home_dir() -> Option<PathBuf> {
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".nca"))
+}
+
+/// Stable per-workspace id: `{slug}-{hex}` derived from the canonical workspace path.
+pub fn workspace_cache_id(workspace_root: &Path) -> Result<(String, PathBuf), WorkspaceCacheError> {
+    let canonical = workspace_root.canonicalize().map_err(|source| {
+        WorkspaceCacheError::Canonicalize {
+            path: workspace_root.to_path_buf(),
+            source,
+        }
+    })?;
+    let path_str = canonical.to_string_lossy();
+    let suffix = workspace_path_hash_suffix(path_str.as_ref());
+    let slug = workspace_dir_slug(&canonical);
+    Ok((format!("{slug}-{suffix}"), canonical))
+}
+
+/// `~/.nca/workspaces/<workspace-id>/`
+pub fn workspace_cache_dir(workspace_root: &Path) -> Result<PathBuf, WorkspaceCacheError> {
+    let (id, _) = workspace_cache_id(workspace_root)?;
+    let home = nca_home_dir().ok_or(WorkspaceCacheError::NoHomeDir)?;
+    Ok(home.join("workspaces").join(id))
+}
+
+/// Cached CLI index JSON for this workspace.
+pub fn workspace_cli_index_path(workspace_root: &Path) -> Result<PathBuf, WorkspaceCacheError> {
+    Ok(workspace_cache_dir(workspace_root)?.join("cli-index.json"))
+}
+
+fn workspace_dir_slug(path: &Path) -> String {
+    let raw = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("workspace")
+        .to_ascii_lowercase();
+    let mut out = String::new();
+    let mut prev_sep = false;
+    for c in raw.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_sep = false;
+        } else if !out.is_empty() && !prev_sep {
+            out.push('-');
+            prev_sep = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "workspace".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn workspace_path_hash_suffix(canonical_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_path.as_bytes());
+    let digest = hasher.finalize();
+    // 16 hex chars — stable across Rust versions (unlike std::collections::hash_map::DefaultHasher).
+    format!("{digest:x}")[..16].to_string()
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceCacheError {
+    #[error("HOME is not set")]
+    NoHomeDir,
+    #[error("failed to canonicalize workspace path {path}: {source}")]
+    Canonicalize {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
 pub fn workspace_config_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(".nca").join("config.local.toml")
 }
@@ -756,18 +832,22 @@ impl Default for PermissionMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     pub history_dir: PathBuf,
+    #[serde(alias = "max_turn_per_run")]
     pub max_turns_per_run: u32,
     pub max_tool_calls_per_turn: u32,
     pub checkpoint_interval: u32,
+    /// File that stores the last active session ID for auto-resume.
+    pub last_session_file: PathBuf,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             history_dir: PathBuf::from(".nca/sessions"),
-            max_turns_per_run: 16,
+            max_turns_per_run: 128,
             max_tool_calls_per_turn: 200,
             checkpoint_interval: 5,
+            last_session_file: PathBuf::from(".nca/.last_session"),
         }
     }
 }
@@ -809,6 +889,58 @@ pub struct MemoryConfig {
     pub max_notes: usize,
     #[serde(default)]
     pub auto_compact_on_finish: bool,
+    /// Context management configuration.
+    #[serde(default)]
+    pub context: ContextConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextConfig {
+    /// Target context window size (approximate tokens).
+    /// Set to 0 for auto-detection based on model, or specify a custom value.
+    /// Auto-detection uses known model context windows.
+    #[serde(default)]
+    pub context_window_target: usize,
+    /// Use model-specific context window detection.
+    /// When true, ignores context_window_target and auto-detects from model name.
+    #[serde(default = "default_true")]
+    pub auto_detect_context_window: bool,
+    /// When true with `auto_detect_context_window`, query the active provider's models API
+    /// before falling back to built-in tables. OpenRouter's catalog is public; OpenAI and
+    /// Anthropic require configured API keys. Set `NCA_SKIP_CONTEXT_API=1` to disable at runtime.
+    /// Catalog responses are cached in-process; override TTL with `NCA_CONTEXT_API_CACHE_TTL_SECS`.
+    #[serde(default = "default_true")]
+    pub query_provider_models_api: bool,
+    /// Maximum messages to retain after compaction.
+    #[serde(default = "default_max_retained_messages")]
+    pub max_retained_messages: usize,
+    /// Percentage of context window that triggers auto-summarize (0-100).
+    #[serde(default = "default_summarize_threshold")]
+    pub auto_summarize_threshold: u8,
+    /// Enable automatic context summarization.
+    #[serde(default = "default_true")]
+    pub enable_auto_summarize: bool,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            context_window_target: 0, // 0 means auto-detect
+            auto_detect_context_window: true,
+            query_provider_models_api: true,
+            max_retained_messages: default_max_retained_messages(),
+            auto_summarize_threshold: default_summarize_threshold(),
+            enable_auto_summarize: default_true(),
+        }
+    }
+}
+
+fn default_summarize_threshold() -> u8 {
+    75
+}
+
+fn default_max_retained_messages() -> usize {
+    50
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -930,6 +1062,7 @@ impl Default for MemoryConfig {
             file_path: PathBuf::from(".nca/memory.json"),
             max_notes: default_max_memory_notes(),
             auto_compact_on_finish: false,
+            context: ContextConfig::default(),
         }
     }
 }
@@ -944,6 +1077,32 @@ impl MemoryConfig {
         }
         if let Some(auto_compact_on_finish) = partial.auto_compact_on_finish {
             self.auto_compact_on_finish = auto_compact_on_finish;
+        }
+        if let Some(context) = partial.context {
+            self.context.merge(context);
+        }
+    }
+}
+
+impl ContextConfig {
+    fn merge(&mut self, partial: PartialContextConfig) {
+        if let Some(auto_detect) = partial.auto_detect_context_window {
+            self.auto_detect_context_window = auto_detect;
+        }
+        if let Some(context_window_target) = partial.context_window_target {
+            self.context_window_target = context_window_target;
+        }
+        if let Some(max_retained_messages) = partial.max_retained_messages {
+            self.max_retained_messages = max_retained_messages;
+        }
+        if let Some(auto_summarize_threshold) = partial.auto_summarize_threshold {
+            self.auto_summarize_threshold = auto_summarize_threshold;
+        }
+        if let Some(enable_auto_summarize) = partial.enable_auto_summarize {
+            self.enable_auto_summarize = enable_auto_summarize;
+        }
+        if let Some(query_provider_models_api) = partial.query_provider_models_api {
+            self.query_provider_models_api = query_provider_models_api;
         }
     }
 }
@@ -990,6 +1149,9 @@ impl SessionConfig {
         }
         if let Some(checkpoint_interval) = partial.checkpoint_interval {
             self.checkpoint_interval = checkpoint_interval;
+        }
+        if let Some(last_session_file) = partial.last_session_file {
+            self.last_session_file = last_session_file;
         }
     }
 }
@@ -1074,9 +1236,11 @@ struct PartialPermissionConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 struct PartialSessionConfig {
     history_dir: Option<PathBuf>,
+    #[serde(alias = "max_turn_per_run")]
     max_turns_per_run: Option<u32>,
     max_tool_calls_per_turn: Option<u32>,
     checkpoint_interval: Option<u32>,
+    last_session_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1098,6 +1262,17 @@ struct PartialMemoryConfig {
     file_path: Option<PathBuf>,
     max_notes: Option<usize>,
     auto_compact_on_finish: Option<bool>,
+    context: Option<PartialContextConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct PartialContextConfig {
+    context_window_target: Option<usize>,
+    auto_detect_context_window: Option<bool>,
+    query_provider_models_api: Option<bool>,
+    max_retained_messages: Option<usize>,
+    auto_summarize_threshold: Option<u8>,
+    enable_auto_summarize: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1158,6 +1333,17 @@ fn default_skill_directories() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_accepts_max_turn_per_run_typo_alias() {
+        let raw = r#"
+            [session]
+            max_turn_per_run = 99
+        "#;
+        let partial: PartialNcaConfig = toml::from_str(raw).expect("parse");
+        let session = partial.session.expect("session table");
+        assert_eq!(session.max_turns_per_run, Some(99));
+    }
 
     #[test]
     fn apply_model_override_updates_selected_provider_model() {
@@ -1250,4 +1436,16 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn workspace_cache_id_stable_for_same_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (id1, p1) = workspace_cache_id(dir.path()).expect("id");
+        let (id2, p2) = workspace_cache_id(dir.path()).expect("id");
+        assert_eq!(id1, id2);
+        assert_eq!(p1, p2);
+        assert!(id1.contains('-'));
+        assert!(id1.len() > 16);
+    }
+
 }

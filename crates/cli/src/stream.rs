@@ -78,6 +78,7 @@ struct StreamStats {
     input_tokens: Arc<AtomicU64>,
     output_tokens: Arc<AtomicU64>,
     estimated_cost: Arc<AtomicU64>,
+    #[allow(dead_code)]
     start_time: Instant,
 }
 
@@ -113,6 +114,7 @@ impl StreamStats {
         self.estimated_cost.load(Ordering::Relaxed) as f64 / 100.0
     }
 
+    #[allow(dead_code)]
     fn elapsed_secs(&self) -> u64 {
         self.start_time.elapsed().as_secs()
     }
@@ -443,6 +445,63 @@ fn render_event(event: &AgentEvent, stats: &StreamStats) {
                 "  {} {}",
                 "✗".color(theme::ERROR),
                 message.color(theme::ERROR)
+            );
+        }
+        AgentEvent::ChildSessionSpawned {
+            child_session_id,
+            task,
+            ..
+        } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            let short = if child_session_id.len() > 8 {
+                &child_session_id[..8]
+            } else {
+                child_session_id.as_str()
+            };
+            println!(
+                "  {} sub-agent {}… — {}",
+                "⚡".color(theme::TOOL_BG).bold(),
+                short,
+                task.chars().take(100).collect::<String>()
+            );
+        }
+        AgentEvent::ChildSessionActivity {
+            child_session_id,
+            phase,
+            detail,
+        } => {
+            print!("{}", theme::CLEAR_LINE);
+            let short = if child_session_id.len() > 8 {
+                &child_session_id[..8]
+            } else {
+                child_session_id.as_str()
+            };
+            println!(
+                "  {} {}… · {} · {}",
+                "↳".color(theme::TOOL_BG),
+                short,
+                phase.color(theme::TEXT_DIM),
+                detail.color(theme::TEXT_DIM)
+            );
+        }
+        AgentEvent::ChildSessionCompleted {
+            child_session_id,
+            status,
+            ..
+        } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            let short = if child_session_id.len() > 8 {
+                &child_session_id[..8]
+            } else {
+                child_session_id.as_str()
+            };
+            println!(
+                "  {} sub-agent {}… {}",
+                "✓".color(theme::SUCCESS),
+                short,
+                status.color(theme::TEXT_DIM)
             );
         }
         AgentEvent::MessageReceived { role, content } => {

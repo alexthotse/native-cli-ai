@@ -1,5 +1,5 @@
-mod approval_prompt;
 mod approval_prompts;
+mod cli_index;
 mod prompt;
 mod repl;
 mod runner;
@@ -45,6 +45,10 @@ struct Cli {
     #[arg(short, long)]
     resume: bool,
 
+    /// Start a new session instead of resuming the last one
+    #[arg(long)]
+    no_resume: bool,
+
     /// Start interactive run mode (Claude-style)
     #[arg(long)]
     run: bool,
@@ -84,6 +88,10 @@ struct Cli {
     /// Permission handling mode (default: from config, fallback to `default`)
     #[arg(long, value_enum)]
     permission_mode: Option<CliPermissionMode>,
+
+    /// Max turns per run (overrides config)
+    #[arg(long)]
+    max_turns: Option<u32>,
 
     /// Internal session identifier for spawned runs
     #[arg(long, hide = true)]
@@ -221,6 +229,44 @@ enum Command {
         #[arg(value_enum, default_value_t = ClapShell::Bash)]
         shell: ClapShell,
     },
+    /// Autonomous research helpers (see `crates/autoresearch`, program `.md` files).
+    Autoresearch {
+        #[command(subcommand)]
+        command: AutoresearchCmd,
+    },
+    /// Build or show a cached CLI index under ~/.nca/workspaces/<id>/ (for agents and tooling).
+    Index {
+        #[command(subcommand)]
+        command: IndexCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum IndexCmd {
+    /// Generate `cli-index.json` for the current workspace (canonical path → stable id).
+    Build {
+        /// Print JSON status (path, workspace_id) instead of a one-line message
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the last generated index (requires `index build` first).
+    Show {
+        /// Pretty-print full JSON; otherwise print a short summary
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum AutoresearchCmd {
+    /// Run the program's metric shell command once and print the parsed metric.
+    Once {
+        /// Path to research program markdown (e.g. `docs/research/cli-dx-research.md`)
+        program: PathBuf,
+        /// Working directory (defaults to current directory)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -315,6 +361,9 @@ async fn try_main() -> anyhow::Result<()> {
     if cli.enable_thinking {
         config.model.enable_thinking = true;
         config.model.thinking_budget = cli.thinking_budget;
+    }
+    if let Some(max_turns) = cli.max_turns {
+        config.session.max_turns_per_run = max_turns;
     }
 
     let workspace_root = PathBuf::from(".");
@@ -475,6 +524,20 @@ async fn try_main() -> anyhow::Result<()> {
         Some(Command::Completion { shell }) => {
             generate_shell_completion(shell);
         }
+        Some(Command::Index { command }) => match command {
+            IndexCmd::Build { json } => {
+                cli_index::run_index_build(&workspace_root, json).await?;
+            }
+            IndexCmd::Show { json } => {
+                cli_index::run_index_show(&workspace_root, json).await?;
+            }
+        },
+        Some(Command::Autoresearch { command }) => match command {
+            AutoresearchCmd::Once { program, workspace } => {
+                let ws = workspace.unwrap_or_else(|| workspace_root.clone());
+                autoresearch_once(program, ws).await?;
+            }
+        },
         None => {
             if let Some(prompt) = cli.prompt.as_deref() {
                 if let Some(mode) = cli.permission_mode {
@@ -537,7 +600,8 @@ async fn try_main() -> anyhow::Result<()> {
                     cli.no_tui,
                 )
                 .await?;
-            } else {
+            } else if cli.no_resume {
+                // Explicitly skip auto-resume; create a fresh session.
                 if cli.run {
                     eprintln!("[run-mode] interactive run profile enabled");
                 }
@@ -586,6 +650,77 @@ async fn try_main() -> anyhow::Result<()> {
                     repl.run_with_tui().await?;
                 } else {
                     repl.run().await?;
+                }
+            } else {
+                // Auto-resume: if a last-session pointer exists and points to a valid session,
+                // resume it silently instead of creating a new session.
+                if let Ok(Some(session_id)) =
+                    nca_runtime::supervisor::get_last_session_id(&config, &workspace_root).await
+                {
+                    eprintln!(
+                        "[session] Resuming last session {} (use --no-resume to start fresh)",
+                        session_id
+                    );
+                    resume_session(
+                        config,
+                        &workspace_root,
+                        &session_id,
+                        None,
+                        cli.safe,
+                        cli.stream,
+                        cli.no_tui,
+                    )
+                    .await?;
+                } else {
+                    if cli.run {
+                        eprintln!("[run-mode] interactive run profile enabled");
+                    }
+                    if let Some(mode) = cli.permission_mode {
+                        config.permissions.mode = mode.into();
+                    }
+                    let use_tui = !cli.no_tui
+                        && stdout().is_terminal()
+                        && stdin().is_terminal()
+                        && matches!(cli.stream, StreamMode::Human);
+                    let approval_handler: Option<
+                        std::sync::Arc<dyn nca_core::approval::ApprovalHandler>,
+                    > = if use_tui {
+                        None
+                    } else {
+                        Some(InteractiveIpcApprovalHandler::new())
+                    };
+                    let mut runtime = build_session_runtime(
+                        config.clone(),
+                        &workspace_root,
+                        cli.safe,
+                        true,
+                        cli.session_id,
+                        approval_handler,
+                        orchestration_context.clone(),
+                    )
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                    if !use_tui {
+                        if let Some(rx) = runtime.take_event_rx() {
+                            let ipc_handle = runtime.take_ipc_handle();
+                            let approval_pending = runtime.take_ipc_approval_pending();
+                            let _stream_task = spawn_stream_task(
+                                rx,
+                                cli.stream,
+                                runtime.event_log_path(),
+                                ipc_handle,
+                                approval_pending,
+                                runtime.question_pending(),
+                                None,
+                            );
+                        }
+                    }
+                    let mut repl = Repl::new(runtime, cli.safe, cli.run);
+                    if use_tui {
+                        repl.run_with_tui().await?;
+                    } else {
+                        repl.run().await?;
+                    }
                 }
             }
         }
@@ -1292,6 +1427,61 @@ fn show_doctor(config: &NcaConfig, workspace_root: &PathBuf, json: bool) -> anyh
         println!("Memory path: {}", output.memory_path.display());
         println!("MiniMax remains the default recommended path for this workspace.");
     }
+    Ok(())
+}
+
+async fn autoresearch_once(program: PathBuf, workspace: PathBuf) -> anyhow::Result<()> {
+    use nca_autoresearch::experiment::{ExperimentConfig, ExperimentRunner};
+    use nca_autoresearch::metric_parser::MetricParser;
+    use nca_autoresearch::program::ResearchProgram;
+
+    let prog = ResearchProgram::from_file(&program).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let shell_cmd = prog
+        .metric_command
+        .command
+        .trim()
+        .trim_matches('`')
+        .trim()
+        .replace('\n', " ");
+    if shell_cmd.is_empty() {
+        anyhow::bail!("research program has an empty metric cmd/command");
+    }
+
+    println!("workspace: {}", workspace.display());
+    println!("program:   {}", program.display());
+    println!("metric:    regex {:?}", prog.metric_command.parse_regex);
+    println!("running:   sh -c {}", shell_cmd);
+
+    let cfg = ExperimentConfig {
+        working_dir: workspace,
+        command: "sh".into(),
+        args: vec!["-c".into(), shell_cmd.to_string()],
+        time_budget_seconds: prog.time_budget_seconds,
+        log_file: None,
+        memory_limit_gb: prog.max_memory_gb,
+        kill_timeout_factor: 2,
+    };
+    let runner = ExperimentRunner::new(cfg);
+    let output = runner
+        .run_with_description("nca autoresearch once".into())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let parser = MetricParser::new();
+    let metric = parser
+        .extract_with_regex(&output.output, &prog.metric_command.parse_regex)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not parse metric with regex {:?} from output (first 800 chars):\n{}",
+                prog.metric_command.parse_regex,
+                output.output.chars().take(800).collect::<String>()
+            )
+        })?;
+
+    println!("\n---");
+    println!("metric value: {metric}");
+    println!("experiment status: {:?}", output.status);
+    println!("---");
     Ok(())
 }
 
