@@ -112,15 +112,18 @@ impl ContextManager {
     pub fn stats(&self, messages: &[Message]) -> ContextStats {
         let estimated_tokens = Self::estimate_tokens_for_slice(messages);
         let message_count = messages.len();
-        
-        let usage_percent = ((estimated_tokens as f64 / self.config.context_window_target as f64) 
-            * 100.0) as u8;
-        
+
+        let context_window = self.config.context_window_target.max(1);
+        let usage_percent = ((estimated_tokens as f64 / context_window as f64) * 100.0)
+            .min(100.0) as u8;
+
         let needs_attention = usage_percent >= 80;
-        let should_summarize = self.config.enable_auto_summarize 
+        let should_summarize = self.config.enable_auto_summarize
             && usage_percent >= self.config.auto_summarize_threshold;
 
         ContextStats {
+            model: self.model.clone(),
+            context_window,
             estimated_tokens,
             message_count,
             usage_percent,
@@ -390,6 +393,8 @@ mod tests {
         let stats = manager.stats(&messages);
         assert!(stats.message_count == 3);
         assert!(stats.estimated_tokens > 0);
+        assert_eq!(stats.model, "test-model");
+        assert_eq!(stats.context_window, 1000); // stats use configured target
     }
 
     #[test]

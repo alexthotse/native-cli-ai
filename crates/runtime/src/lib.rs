@@ -4,6 +4,7 @@ pub mod ipc;
 pub mod last_session;
 pub mod memory_store;
 pub mod model_limits;
+pub mod model_limits_api;
 pub mod process;
 pub mod pty;
 pub mod service;

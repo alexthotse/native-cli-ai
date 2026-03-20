@@ -829,6 +829,12 @@ pub struct ContextConfig {
     /// When true, ignores context_window_target and auto-detects from model name.
     #[serde(default = "default_true")]
     pub auto_detect_context_window: bool,
+    /// When true with `auto_detect_context_window`, query the active provider's models API
+    /// before falling back to built-in tables. OpenRouter's catalog is public; OpenAI and
+    /// Anthropic require configured API keys. Set `NCA_SKIP_CONTEXT_API=1` to disable at runtime.
+    /// Catalog responses are cached in-process; override TTL with `NCA_CONTEXT_API_CACHE_TTL_SECS`.
+    #[serde(default = "default_true")]
+    pub query_provider_models_api: bool,
     /// Maximum messages to retain after compaction.
     #[serde(default = "default_max_retained_messages")]
     pub max_retained_messages: usize,
@@ -845,6 +851,7 @@ impl Default for ContextConfig {
         Self {
             context_window_target: 0, // 0 means auto-detect
             auto_detect_context_window: true,
+            query_provider_models_api: true,
             max_retained_messages: default_max_retained_messages(),
             auto_summarize_threshold: default_summarize_threshold(),
             enable_auto_summarize: default_true(),
@@ -1018,6 +1025,9 @@ impl ContextConfig {
         if let Some(enable_auto_summarize) = partial.enable_auto_summarize {
             self.enable_auto_summarize = enable_auto_summarize;
         }
+        if let Some(query_provider_models_api) = partial.query_provider_models_api {
+            self.query_provider_models_api = query_provider_models_api;
+        }
     }
 }
 
@@ -1183,6 +1193,7 @@ struct PartialMemoryConfig {
 struct PartialContextConfig {
     context_window_target: Option<usize>,
     auto_detect_context_window: Option<bool>,
+    query_provider_models_api: Option<bool>,
     max_retained_messages: Option<usize>,
     auto_summarize_threshold: Option<u8>,
     enable_auto_summarize: Option<bool>,

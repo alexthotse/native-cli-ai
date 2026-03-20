@@ -1,6 +1,6 @@
 use crate::context_manager::{ContextManager, ContextManagerConfig, ContextStats};
-use crate::model_limits::ModelLimits;
 use crate::ipc::{IpcHandle, IpcServer};
+use crate::model_limits_api;
 use crate::last_session::LastSessionStore;
 use crate::memory_store::{MemoryNote, MemoryStore};
 use crate::pty::PtyManager;
@@ -218,27 +218,8 @@ impl Supervisor {
             build_system_prompt(&config, &workspace_root, cfg.orchestration_context.as_ref());
         agent.set_system_prompt(system_prompt);
 
-        // Build context manager config with model-specific detection
-        let model_limits = ModelLimits::for_model(&config.model.default_model);
-        let context_window = if config.memory.context.auto_detect_context_window {
-            tracing::info!(
-                "Auto-detected context window for {}: {} tokens",
-                config.model.default_model,
-                model_limits.context_window
-            );
-            model_limits.context_window
-        } else {
-            config.memory.context.context_window_target
-        };
-        
-        let context_config = ContextManagerConfig {
-            context_window_target: context_window,
-            max_retained_messages: config.memory.context.max_retained_messages,
-            auto_summarize_threshold: config.memory.context.auto_summarize_threshold,
-            enable_auto_summarize: config.memory.context.enable_auto_summarize,
-            max_message_chars_for_summary: 10000,
-        };
-        let context_manager = ContextManager::new(context_config, config.model.default_model.clone());
+        let context_manager =
+            Self::make_context_manager(&config, &config.model.default_model).await;
 
         let sup = Self {
             session_id,
@@ -323,6 +304,7 @@ impl Supervisor {
         sup.spawn_reason = loaded.meta.spawn_reason;
         sup.session_summary = loaded.meta.session_summary;
         sup.orchestration = loaded.meta.orchestration;
+        sup.context_manager = Self::make_context_manager(&sup.config, &sup.model).await;
         Ok(sup)
     }
 
@@ -368,20 +350,30 @@ impl Supervisor {
 
     /// Get current context statistics with model info.
     pub fn context_stats(&self) -> ContextStats {
-        use crate::model_limits::ModelLimits;
-        
-        let model_limits = ModelLimits::for_model(&self.model);
-        let manager_stats = self.context_manager.stats(&self.agent.messages);
-        
-        ContextStats {
-            model: self.model.clone(),
-            context_window: model_limits.context_window,
-            estimated_tokens: manager_stats.estimated_tokens,
-            message_count: manager_stats.message_count,
-            usage_percent: manager_stats.usage_percent,
-            needs_attention: manager_stats.needs_attention,
-            should_summarize: manager_stats.should_summarize,
-        }
+        self.context_manager.stats(&self.agent.messages)
+    }
+
+    async fn make_context_manager(config: &NcaConfig, model: &str) -> ContextManager {
+        let model_limits = model_limits_api::resolve_model_limits(config, model).await;
+        let context_window = if config.memory.context.auto_detect_context_window {
+            tracing::info!(
+                "Context window target for {}: {} tokens",
+                model,
+                model_limits.context_window
+            );
+            model_limits.context_window
+        } else {
+            config.memory.context.context_window_target
+        };
+
+        let context_config = ContextManagerConfig {
+            context_window_target: context_window,
+            max_retained_messages: config.memory.context.max_retained_messages,
+            auto_summarize_threshold: config.memory.context.auto_summarize_threshold,
+            enable_auto_summarize: config.memory.context.enable_auto_summarize,
+            max_message_chars_for_summary: 10000,
+        };
+        ContextManager::new(context_config, model.to_string())
     }
 
     /// Check if context needs attention or summarization.

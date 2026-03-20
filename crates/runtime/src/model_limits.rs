@@ -2,6 +2,10 @@
 //!
 //! Different LLM models have vastly different context limits.
 //! This module provides detection and defaults for common models.
+//!
+//! For models routed via [OpenRouter](https://openrouter.ai/models), authoritative
+//! per-model `context_length` values are published in the public API:
+//! `GET https://openrouter.ai/api/v1/models` (JSON field `context_length` on each entry).
 
 use serde::{Deserialize, Serialize};
 
@@ -74,13 +78,25 @@ pub const MODEL_CONTEXT_LIMITS: &[ModelContextLimits] = &[
         context_window: 16_385,
         max_output_tokens: 4096,
     },
+    // MiniMax M2.7 — OpenRouter `minimax/minimax-m2.7`: context_length 204_800 (must be before `minimax-m2`)
+    ModelContextLimits {
+        pattern: "minimax-m2.7",
+        context_window: 204_800,
+        max_output_tokens: 131_072,
+    },
+    // OpenRouter slug (config may store full id)
+    ModelContextLimits {
+        pattern: "minimax/minimax-m2.7",
+        context_window: 204_800,
+        max_output_tokens: 131_072,
+    },
     // MiniMax M2.5 (reasoning model)
     ModelContextLimits {
         pattern: "minimax-m2.5",
         context_window: 100_000,
         max_output_tokens: 8192,
     },
-    // MiniMax M2
+    // MiniMax M2 (not M2.5 / M2.7)
     ModelContextLimits {
         pattern: "minimax-m2",
         context_window: 32_000,
@@ -230,6 +246,8 @@ mod tests {
 
     #[test]
     fn test_detect_minimax() {
+        assert_eq!(detect_context_window("MiniMax-M2.7"), 204_800);
+        assert_eq!(detect_context_window("minimax/minimax-m2.7"), 204_800);
         assert_eq!(detect_context_window("MiniMax-M2.5"), 100_000);
         assert_eq!(detect_context_window("minimax-m2"), 32_000);
     }
