@@ -203,7 +203,9 @@ mod interactive_question_serde_tests {
             allow_custom: true,
             suggested_answer: "Alpha".into(),
         };
-        let ev = AgentEvent::QuestionRequested { question: q.clone() };
+        let ev = AgentEvent::QuestionRequested {
+            question: q.clone(),
+        };
         let json = serde_json::to_string(&ev).expect("serialize");
         let back: AgentEvent = serde_json::from_str(&json).expect("deserialize");
         match back {

@@ -15,10 +15,9 @@ const WAIT_SECS: u64 = 3600;
 
 fn selection_summary(sel: &QuestionSelection, payload: &InteractiveQuestionPayload) -> String {
     match sel {
-        QuestionSelection::Suggested => format!(
-            "Selected suggested answer: {}",
-            payload.suggested_answer
-        ),
+        QuestionSelection::Suggested => {
+            format!("Selected suggested answer: {}", payload.suggested_answer)
+        }
         QuestionSelection::Option { option_id } => {
             let label = payload
                 .options
@@ -92,7 +91,11 @@ impl ToolExecutor for AskQuestionTool {
     }
 
     async fn execute(&self, call: &ToolCall) -> ToolResult {
-        let prompt = call.input["prompt"].as_str().unwrap_or("").trim().to_string();
+        let prompt = call.input["prompt"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if prompt.is_empty() {
             return ToolResult {
                 call_id: call.id.clone(),
@@ -102,8 +105,7 @@ impl ToolExecutor for AskQuestionTool {
             };
         }
 
-        let suggested = call
-            .input["suggested_answer"]
+        let suggested = call.input["suggested_answer"]
             .as_str()
             .unwrap_or("")
             .trim()
@@ -113,7 +115,9 @@ impl ToolExecutor for AskQuestionTool {
                 call_id: call.id.clone(),
                 success: false,
                 output: String::new(),
-                error: Some("suggested_answer is required (provide your recommended choice)".into()),
+                error: Some(
+                    "suggested_answer is required (provide your recommended choice)".into(),
+                ),
             };
         }
 
@@ -204,25 +208,24 @@ impl ToolExecutor for AskQuestionTool {
             };
         }
 
-        let selection = match tokio::time::timeout(std::time::Duration::from_secs(WAIT_SECS), rx)
-            .await
-        {
-            Ok(Ok(sel)) => sel,
-            Ok(Err(_)) | Err(_) => {
-                let mut m = self.pending.lock().unwrap();
-                m.remove(&question_id);
-                return ToolResult {
-                    call_id: call.id.clone(),
-                    success: false,
-                    output: String::new(),
-                    error: Some(
-                        "timed out or channel closed waiting for question answer; use IPC \
+        let selection =
+            match tokio::time::timeout(std::time::Duration::from_secs(WAIT_SECS), rx).await {
+                Ok(Ok(sel)) => sel,
+                Ok(Err(_)) | Err(_) => {
+                    let mut m = self.pending.lock().unwrap();
+                    m.remove(&question_id);
+                    return ToolResult {
+                        call_id: call.id.clone(),
+                        success: false,
+                        output: String::new(),
+                        error: Some(
+                            "timed out or channel closed waiting for question answer; use IPC \
                          AnswerQuestion or an interactive terminal"
-                            .into(),
-                    ),
-                };
-            }
-        };
+                                .into(),
+                        ),
+                    };
+                }
+            };
 
         let summary = selection_summary(&selection, &payload);
         let _ = self

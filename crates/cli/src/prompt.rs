@@ -34,7 +34,7 @@ impl NcaPrompt {
         }
 
         let base = parts.join("( ");
-        format!("{base})> ", )
+        format!("{base})> ",)
     }
 }
 
@@ -47,7 +47,10 @@ impl Prompt for NcaPrompt {
         std::borrow::Cow::Borrowed("")
     }
 
-    fn render_prompt_indicator(&self, _edit_mode: reedline::PromptEditMode) -> std::borrow::Cow<'_, str> {
+    fn render_prompt_indicator(
+        &self,
+        _edit_mode: reedline::PromptEditMode,
+    ) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Borrowed("")
     }
 
@@ -55,7 +58,10 @@ impl Prompt for NcaPrompt {
         "... ".into()
     }
 
-    fn render_prompt_history_search_indicator(&self, _search: reedline::PromptHistorySearch) -> std::borrow::Cow<'_, str> {
+    fn render_prompt_history_search_indicator(
+        &self,
+        _search: reedline::PromptHistorySearch,
+    ) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Borrowed("(search) ")
     }
 }

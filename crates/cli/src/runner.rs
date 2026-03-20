@@ -30,6 +30,24 @@ pub fn dispatch_question_answer(
     tx.send(selection).is_ok()
 }
 
+/// Resolve a pending approval without going through the main command loop.
+pub fn dispatch_tool_approval(
+    approvals: &Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
+    call_id: &str,
+    approved: bool,
+) -> bool {
+    let Some(approvals) = approvals else {
+        return false;
+    };
+    let Ok(mut map) = approvals.lock() else {
+        return false;
+    };
+    let Some(tx) = map.remove(call_id) else {
+        return false;
+    };
+    tx.send(approved).is_ok()
+}
+
 /// Thin CLI wrapper around the runtime `Supervisor`.
 /// Keeps the same public API so existing CLI code (repl, main) works unchanged.
 pub struct SessionRuntime {
@@ -78,11 +96,7 @@ impl SessionRuntime {
     }
 
     /// Submit an answer for the current interactive question (TUI / REPL).
-    pub fn submit_question_answer(
-        &self,
-        question_id: &str,
-        selection: QuestionSelection,
-    ) -> bool {
+    pub fn submit_question_answer(&self, question_id: &str, selection: QuestionSelection) -> bool {
         dispatch_question_answer(&self.question_pending, question_id, selection)
     }
 
@@ -217,6 +231,7 @@ pub async fn build_resumed_session_runtime(
     safe_mode: bool,
     interactive_approvals: bool,
     session_id: &str,
+    approval_handler: Option<Arc<dyn ApprovalHandler>>,
 ) -> Result<SessionRuntime, ProviderError> {
     let mut supervisor = Supervisor::resume(
         config.clone(),
@@ -224,6 +239,7 @@ pub async fn build_resumed_session_runtime(
         safe_mode,
         interactive_approvals,
         session_id,
+        approval_handler,
     )
     .await?;
     let mut handle = supervisor.take_handle();

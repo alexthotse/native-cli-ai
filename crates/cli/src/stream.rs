@@ -1,5 +1,5 @@
 //! Event streaming with beautiful TUI rendering
-//! 
+//!
 //! This module provides streaming event rendering with Claude Code-inspired styling.
 
 use colored::Colorize;
@@ -45,7 +45,10 @@ fn prompt_question_stdio(q: &InteractiveQuestionPayload) -> io::Result<QuestionS
         io::stdin().read_line(&mut custom)?;
         let custom = custom.trim().to_string();
         if custom.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty custom answer"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty custom answer",
+            ));
         }
         return Ok(QuestionSelection::Custom { text: custom });
     }
@@ -240,22 +243,58 @@ mod theme {
 
     pub const CLEAR_LINE: &str = "\x1B[2K";
 
-    pub const USER_BG: Color = Color::TrueColor { r: 0, g: 145, b: 191 };
-    pub const ASSISTANT_BG: Color = Color::TrueColor { r: 137, g: 87, b: 220 };
-    pub const TOOL_BG: Color = Color::TrueColor { r: 58, g: 170, b: 214 };
+    pub const USER_BG: Color = Color::TrueColor {
+        r: 0,
+        g: 145,
+        b: 191,
+    };
+    pub const ASSISTANT_BG: Color = Color::TrueColor {
+        r: 137,
+        g: 87,
+        b: 220,
+    };
+    pub const TOOL_BG: Color = Color::TrueColor {
+        r: 58,
+        g: 170,
+        b: 214,
+    };
 
-    pub const SUCCESS: Color = Color::TrueColor { r: 63, g: 185, b: 80 };
-    pub const ERROR: Color = Color::TrueColor { r: 248, g: 81, b: 73 };
-    pub const WARNING: Color = Color::TrueColor { r: 210, g: 153, b: 34 };
+    pub const SUCCESS: Color = Color::TrueColor {
+        r: 63,
+        g: 185,
+        b: 80,
+    };
+    pub const ERROR: Color = Color::TrueColor {
+        r: 248,
+        g: 81,
+        b: 73,
+    };
+    pub const WARNING: Color = Color::TrueColor {
+        r: 210,
+        g: 153,
+        b: 34,
+    };
 
-    pub const TEXT: Color = Color::TrueColor { r: 220, g: 220, b: 230 };
-    pub const TEXT_DIM: Color = Color::TrueColor { r: 150, g: 150, b: 160 };
+    pub const TEXT: Color = Color::TrueColor {
+        r: 220,
+        g: 220,
+        b: 230,
+    };
+    pub const TEXT_DIM: Color = Color::TrueColor {
+        r: 150,
+        g: 150,
+        b: 160,
+    };
 }
 
 /// Render a single event with Claude Code-like styling
 fn render_event(event: &AgentEvent, stats: &StreamStats) {
     match event {
-        AgentEvent::SessionStarted { session_id: _, model, workspace: _ } => {
+        AgentEvent::SessionStarted {
+            session_id: _,
+            model,
+            workspace: _,
+        } => {
             print!("{}", theme::CLEAR_LINE);
             println!();
             println!(
@@ -269,7 +308,11 @@ fn render_event(event: &AgentEvent, stats: &StreamStats) {
             print!("{delta}");
             stats.record_output_token();
         }
-        AgentEvent::ToolCallStarted { tool, input: _, call_id: _ } => {
+        AgentEvent::ToolCallStarted {
+            tool,
+            input: _,
+            call_id: _,
+        } => {
             print!("{}", theme::CLEAR_LINE);
             println!();
             println!(
@@ -291,11 +334,19 @@ fn render_event(event: &AgentEvent, stats: &StreamStats) {
                 println!(
                     "  {} {}",
                     "✗".color(theme::ERROR),
-                    output.error.as_deref().unwrap_or("Tool failed").color(theme::ERROR)
+                    output
+                        .error
+                        .as_deref()
+                        .unwrap_or("Tool failed")
+                        .color(theme::ERROR)
                 );
             }
         }
-        AgentEvent::ApprovalRequested { call_id: _, tool, description } => {
+        AgentEvent::ApprovalRequested {
+            call_id: _,
+            tool,
+            description,
+        } => {
             print!("{}", theme::CLEAR_LINE);
             println!();
             println!(
@@ -305,12 +356,23 @@ fn render_event(event: &AgentEvent, stats: &StreamStats) {
                 description.color(theme::TEXT_DIM)
             );
         }
-        AgentEvent::ApprovalResolved { call_id: _, approved } => {
+        AgentEvent::ApprovalResolved {
+            call_id: _,
+            approved,
+        } => {
             print!("{}", theme::CLEAR_LINE);
             if *approved {
-                println!("  {} {}", "✓".color(theme::SUCCESS), "Approved".color(theme::SUCCESS));
+                println!(
+                    "  {} {}",
+                    "✓".color(theme::SUCCESS),
+                    "Approved".color(theme::SUCCESS)
+                );
             } else {
-                println!("  {} {}", "✗".color(theme::ERROR), "Denied".color(theme::ERROR));
+                println!(
+                    "  {} {}",
+                    "✗".color(theme::ERROR),
+                    "Denied".color(theme::ERROR)
+                );
             }
         }
         AgentEvent::QuestionRequested { question } => {
@@ -335,10 +397,7 @@ fn render_event(event: &AgentEvent, stats: &StreamStats) {
                 );
             }
             if question.allow_custom {
-                println!(
-                    "    {}",
-                    "[c] custom text".color(theme::TEXT_DIM)
-                );
+                println!("    {}", "[c] custom text".color(theme::TEXT_DIM));
             }
             println!();
         }
@@ -354,8 +413,16 @@ fn render_event(event: &AgentEvent, stats: &StreamStats) {
                 selection
             );
         }
-        AgentEvent::CostUpdated { input_tokens, output_tokens, estimated_cost_usd } => {
-            stats.update_cost(*input_tokens, *output_tokens, (*estimated_cost_usd * 100.0) as u64);
+        AgentEvent::CostUpdated {
+            input_tokens,
+            output_tokens,
+            estimated_cost_usd,
+        } => {
+            stats.update_cost(
+                *input_tokens,
+                *output_tokens,
+                (*estimated_cost_usd * 100.0) as u64,
+            );
         }
         AgentEvent::SessionEnded { reason } => {
             print!("{}", theme::CLEAR_LINE);
@@ -372,7 +439,11 @@ fn render_event(event: &AgentEvent, stats: &StreamStats) {
         AgentEvent::Error { message } => {
             print!("{}", theme::CLEAR_LINE);
             println!();
-            println!("  {} {}", "✗".color(theme::ERROR), message.color(theme::ERROR));
+            println!(
+                "  {} {}",
+                "✗".color(theme::ERROR),
+                message.color(theme::ERROR)
+            );
         }
         AgentEvent::MessageReceived { role, content } => {
             println!();

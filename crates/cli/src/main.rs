@@ -2,14 +2,14 @@ mod approval_prompt;
 mod approval_prompts;
 mod prompt;
 mod repl;
-mod slash_commands;
 mod runner;
+mod slash_commands;
 mod stream;
 mod tui;
 
 use crate::approval_prompts::InteractiveIpcApprovalHandler;
-use clap::Parser;
 use clap::CommandFactory;
+use clap::Parser;
 use clap_complete::aot::generate;
 use nca_common::config::{NcaConfig, PermissionMode, ProviderKind};
 use nca_common::event::EndReason;
@@ -391,8 +391,23 @@ async fn try_main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Some(Command::Sessions { json, status, since_hours, search, limit }) => {
-            list_sessions(&config, &workspace_root, json, status, since_hours, search, limit).await?;
+        Some(Command::Sessions {
+            json,
+            status,
+            since_hours,
+            search,
+            limit,
+        }) => {
+            list_sessions(
+                &config,
+                &workspace_root,
+                json,
+                status,
+                since_hours,
+                search,
+                limit,
+            )
+            .await?;
         }
         Some(Command::Resume {
             session_id,
@@ -529,22 +544,28 @@ async fn try_main() -> anyhow::Result<()> {
                 if let Some(mode) = cli.permission_mode {
                     config.permissions.mode = mode.into();
                 }
-                let ipc_approval = InteractiveIpcApprovalHandler::new();
+                let use_tui = !cli.no_tui
+                    && stdout().is_terminal()
+                    && stdin().is_terminal()
+                    && matches!(cli.stream, StreamMode::Human);
+                let approval_handler: Option<
+                    std::sync::Arc<dyn nca_core::approval::ApprovalHandler>,
+                > = if use_tui {
+                    None
+                } else {
+                    Some(InteractiveIpcApprovalHandler::new())
+                };
                 let mut runtime = build_session_runtime(
                     config.clone(),
                     &workspace_root,
                     cli.safe,
                     true,
                     cli.session_id,
-                    Some(ipc_approval.clone()),
+                    approval_handler,
                     orchestration_context.clone(),
                 )
                 .await
                 .map_err(anyhow::Error::msg)?;
-                let use_tui = !cli.no_tui
-                    && stdout().is_terminal()
-                    && stdin().is_terminal()
-                    && matches!(cli.stream, StreamMode::Human);
                 if !use_tui {
                     if let Some(rx) = runtime.take_event_rx() {
                         let ipc_handle = runtime.take_ipc_handle();
@@ -783,7 +804,10 @@ async fn list_sessions(
         let pattern_lower = pattern.to_lowercase();
         sessions.retain(|s| {
             s.id.to_lowercase().contains(&pattern_lower)
-                || s.session_summary.as_ref().map(|sum| sum.to_lowercase().contains(&pattern_lower)).unwrap_or(false)
+                || s.session_summary
+                    .as_ref()
+                    .map(|sum| sum.to_lowercase().contains(&pattern_lower))
+                    .unwrap_or(false)
                 || s.model.to_lowercase().contains(&pattern_lower)
         });
     }
@@ -853,13 +877,26 @@ async fn resume_session(
     stream: StreamMode,
     no_tui: bool,
 ) -> anyhow::Result<()> {
-    let mut runtime = build_resumed_session_runtime(config, workspace_root, safe, true, session_id)
-        .await
-        .map_err(anyhow::Error::msg)?;
     let use_tui = !no_tui
         && stdout().is_terminal()
         && stdin().is_terminal()
         && matches!(stream, StreamMode::Human);
+    let approval_handler: Option<std::sync::Arc<dyn nca_core::approval::ApprovalHandler>> =
+        if use_tui {
+            None
+        } else {
+            Some(InteractiveIpcApprovalHandler::new())
+        };
+    let mut runtime = build_resumed_session_runtime(
+        config,
+        workspace_root,
+        safe,
+        true,
+        session_id,
+        approval_handler,
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
     if let Some(prompt) = prompt {
         if let Some(rx) = runtime.take_event_rx() {
             let ipc_handle = runtime.take_ipc_handle();
@@ -1407,19 +1444,44 @@ fn generate_shell_completion(shell: ClapShell) {
 
     match shell {
         ClapShell::Bash => {
-            generate(clap_complete::shells::Bash, &mut cmd, bin_name, &mut std::io::stdout());
+            generate(
+                clap_complete::shells::Bash,
+                &mut cmd,
+                bin_name,
+                &mut std::io::stdout(),
+            );
         }
         ClapShell::Zsh => {
-            generate(clap_complete::shells::Zsh, &mut cmd, bin_name, &mut std::io::stdout());
+            generate(
+                clap_complete::shells::Zsh,
+                &mut cmd,
+                bin_name,
+                &mut std::io::stdout(),
+            );
         }
         ClapShell::Fish => {
-            generate(clap_complete::shells::Fish, &mut cmd, bin_name, &mut std::io::stdout());
+            generate(
+                clap_complete::shells::Fish,
+                &mut cmd,
+                bin_name,
+                &mut std::io::stdout(),
+            );
         }
         ClapShell::PowerShell => {
-            generate(clap_complete::shells::PowerShell, &mut cmd, bin_name, &mut std::io::stdout());
+            generate(
+                clap_complete::shells::PowerShell,
+                &mut cmd,
+                bin_name,
+                &mut std::io::stdout(),
+            );
         }
         ClapShell::Elvish => {
-            generate(clap_complete::shells::Elvish, &mut cmd, bin_name, &mut std::io::stdout());
+            generate(
+                clap_complete::shells::Elvish,
+                &mut cmd,
+                bin_name,
+                &mut std::io::stdout(),
+            );
         }
     }
 }

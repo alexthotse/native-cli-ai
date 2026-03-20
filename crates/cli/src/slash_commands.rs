@@ -20,6 +20,7 @@ pub const SLASH_COMMANDS: &[&str] = &[
     "/doctor",
     "/model",
     "/permissions",
+    "/permission-bypass",
     "/sessions",
     "/exit",
     "/quit",

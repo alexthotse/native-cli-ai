@@ -1,8 +1,7 @@
 //! Full-screen session TUI: transcript, streaming assistant, composer.
 
 use crate::slash_commands::SLASH_COMMANDS;
-use crate::tui::state::{DisplayBlock, TuiSessionState};
-use nca_common::event::QuestionSelection;
+use crate::tui::state::{ApprovalRequest, DisplayBlock, TuiSessionState};
 use crossterm::{
     cursor::{Hide, MoveToColumn, Show},
     event::{
@@ -11,19 +10,20 @@ use crossterm::{
     },
     execute,
     terminal::{
-        disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
-        LeaveAlternateScreen,
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
     },
 };
+use nca_common::event::QuestionSelection;
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
-    Terminal,
+    widgets::{Block, Borders, Clear as ClearWidget, Paragraph, Wrap},
 };
-use std::io::{stdout, Stdout};
+use std::io::{Stdout, stdout};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -60,6 +60,10 @@ mod theme {
 
 const SLASH_PANEL_MAX_ROWS: usize = 8;
 const MOUSE_SCROLL_LINES: usize = 3;
+const SIDEBAR_WIDTH: u16 = 32;
+const SIDEBAR_MIN_TOTAL_WIDTH: u16 = 110;
+const COMMAND_PALETTE_WIDTH: u16 = 48;
+const COMMAND_PALETTE_MAX_ROWS: usize = 10;
 
 fn slash_panel_visible(buffer: &str) -> bool {
     buffer.starts_with('/') && !buffer.contains(' ')
@@ -76,12 +80,33 @@ fn filter_slash_commands(buffer: &str) -> Vec<&'static str> {
         .collect()
 }
 
+fn filter_command_palette(query: &str) -> Vec<&'static str> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return SLASH_COMMANDS.to_vec();
+    }
+    let needle = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    SLASH_COMMANDS
+        .iter()
+        .copied()
+        .filter(|c| c.starts_with(&needle))
+        .collect()
+}
+
 fn slash_panel_height(filtered_len: usize) -> u16 {
     if filtered_len == 0 {
         return 0;
     }
     let rows = filtered_len.min(SLASH_PANEL_MAX_ROWS);
-    let footer = if filtered_len > SLASH_PANEL_MAX_ROWS { 1 } else { 0 };
+    let footer = if filtered_len > SLASH_PANEL_MAX_ROWS {
+        1
+    } else {
+        0
+    };
     // borders (2) + command rows + optional footer
     (rows as u16)
         .saturating_add(footer)
@@ -114,8 +139,42 @@ fn layout_chunks(area: Rect, slash_h: u16) -> (Rect, Rect, Option<Rect>, Rect) {
     }
 }
 
+fn layout_with_sidebar(area: Rect) -> (Rect, Option<Rect>) {
+    if area.width < SIDEBAR_MIN_TOTAL_WIDTH {
+        return (area, None);
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(60), Constraint::Length(SIDEBAR_WIDTH)])
+        .split(area);
+    (chunks[0], Some(chunks[1]))
+}
+
+fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let popup_w = width
+        .min(area.width.saturating_sub(2).max(20))
+        .min(area.width);
+    let popup_h = height
+        .min(area.height.saturating_sub(2).max(6))
+        .min(area.height);
+    Rect::new(
+        area.x + area.width.saturating_sub(popup_w) / 2,
+        area.y + area.height.saturating_sub(popup_h) / 2,
+        popup_w,
+        popup_h,
+    )
+}
+
+/// Matches `PermissionMode` as stored via `format!("{:?}", mode)` (e.g. `BypassPermissions`).
+fn toolbar_permission_is_bypass(mode: &str) -> bool {
+    mode.contains("BypassPermissions")
+}
+
 fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
-    col >= r.x && col < r.x.saturating_add(r.width) && row >= r.y && row < r.y.saturating_add(r.height)
+    col >= r.x
+        && col < r.x.saturating_add(r.width)
+        && row >= r.y
+        && row < r.y.saturating_add(r.height)
 }
 
 pub fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -154,7 +213,10 @@ fn push_transcript_line(
 }
 
 /// Build scrollable transcript lines + optional mouse/click targets per line.
-fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'static>>, Vec<LineAnswerHit>) {
+fn transcript_lines_and_hits(
+    state: &TuiSessionState,
+    width: u16,
+) -> (Vec<Line<'static>>, Vec<LineAnswerHit>) {
     let w = width.max(20) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut hits: Vec<LineAnswerHit> = Vec::new();
@@ -221,6 +283,32 @@ fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'
                     None,
                 );
             }
+            DisplayBlock::ApprovalPending(req) => {
+                render_approval_block(&mut lines, &mut hits, req, w);
+            }
+            DisplayBlock::ApprovalResolved { tool, approved } => {
+                let (label, style) = if *approved {
+                    (
+                        " approved ",
+                        Style::default().fg(Color::Black).bg(theme::SUCCESS),
+                    )
+                } else {
+                    (
+                        " denied ",
+                        Style::default().fg(Color::Black).bg(theme::ERROR),
+                    )
+                };
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(vec![
+                        Span::styled(label, style.add_modifier(Modifier::BOLD)),
+                        Span::styled(format!(" {tool}"), Style::default().fg(theme::TEXT)),
+                    ]),
+                    None,
+                );
+                push_transcript_line(&mut lines, &mut hits, Line::default(), None);
+            }
             DisplayBlock::ToolDone { name, ok, detail } => {
                 let (icon, st) = if *ok {
                     ("✓", Style::default().fg(theme::SUCCESS))
@@ -234,7 +322,9 @@ fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'
                         Span::styled(format!(" {icon} "), st),
                         Span::styled(
                             format!("{name}"),
-                            Style::default().fg(theme::TOOL).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(theme::TOOL)
+                                .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             format!(" — {}", truncate_chars(detail, 100)),
@@ -260,10 +350,15 @@ fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'
                     &mut lines,
                     &mut hits,
                     Line::from(vec![
-                        Span::styled(" ? ", Style::default().fg(Color::Black).bg(theme::WARN).bold()),
+                        Span::styled(
+                            " ? ",
+                            Style::default().fg(Color::Black).bg(theme::WARN).bold(),
+                        ),
                         Span::styled(
                             " question ",
-                            Style::default().fg(theme::WARN).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(theme::WARN)
+                                .add_modifier(Modifier::BOLD),
                         ),
                     ]),
                     None,
@@ -283,7 +378,9 @@ fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'
                     Line::from(vec![
                         Span::styled(
                             format!("  [0] suggested: {} ", q.suggested_answer),
-                            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::UNDERLINED),
+                            Style::default()
+                                .fg(theme::SUCCESS)
+                                .add_modifier(Modifier::UNDERLINED),
                         ),
                         Span::styled("(click)", Style::default().fg(theme::MUTED)),
                     ]),
@@ -296,7 +393,9 @@ fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'
                         Line::from(vec![
                             Span::styled(
                                 format!("  [{}] ({}) {} ", i + 1, o.id, o.label),
-                                Style::default().fg(theme::TEXT).add_modifier(Modifier::UNDERLINED),
+                                Style::default()
+                                    .fg(theme::TEXT)
+                                    .add_modifier(Modifier::UNDERLINED),
                             ),
                             Span::styled("(click)", Style::default().fg(theme::MUTED)),
                         ]),
@@ -347,7 +446,10 @@ fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'
                 &mut lines,
                 &mut hits,
                 Line::from(vec![
-                    Span::styled(" nca ", Style::default().fg(Color::Black).bg(theme::ASSISTANT)),
+                    Span::styled(
+                        " nca ",
+                        Style::default().fg(Color::Black).bg(theme::ASSISTANT),
+                    ),
                     Span::styled(" streaming", Style::default().fg(theme::MUTED)),
                 ]),
                 None,
@@ -364,7 +466,12 @@ fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'
             &mut lines,
             &mut hits,
             Line::from(vec![
-                Span::styled("nca", Style::default().fg(theme::ASSISTANT).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "nca",
+                    Style::default()
+                        .fg(theme::ASSISTANT)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" — session ready", Style::default().fg(theme::MUTED)),
             ]),
             None,
@@ -374,7 +481,7 @@ fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'
             &mut lines,
             &mut hits,
             Line::from(Span::styled(
-                "Tab  agent   !cmd  shell   @path  search   /  commands   wheel  scroll",
+                "Tab  agent   Ctrl+P  commands   !cmd  shell   @path  search   /  inline   wheel  scroll",
                 Style::default().fg(theme::MUTED),
             )),
             None,
@@ -392,7 +499,10 @@ fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     }
 }
 
@@ -426,6 +536,109 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
         out.push(s.to_string());
     }
     out
+}
+
+fn wrap_preformatted_line(line: &str, width: usize) -> Vec<String> {
+    if width < 4 || line.is_empty() {
+        return vec![line.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    for ch in line.chars() {
+        if current_len >= width {
+            out.push(current);
+            current = String::new();
+            current_len = 0;
+        }
+        current.push(ch);
+        current_len += 1;
+    }
+    if out.is_empty() || !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+fn push_wrapped_plain_lines(
+    lines: &mut Vec<Line<'static>>,
+    hits: &mut Vec<LineAnswerHit>,
+    text: &str,
+    width: usize,
+    style: Style,
+) {
+    for source_line in text.lines() {
+        let wrapped = wrap_preformatted_line(source_line, width);
+        for line in wrapped {
+            push_transcript_line(lines, hits, Line::from(Span::styled(line, style)), None);
+        }
+        if source_line.is_empty() {
+            push_transcript_line(lines, hits, Line::default(), None);
+        }
+    }
+}
+
+fn render_approval_block(
+    lines: &mut Vec<Line<'static>>,
+    hits: &mut Vec<LineAnswerHit>,
+    req: &ApprovalRequest,
+    width: usize,
+) {
+    push_transcript_line(
+        lines,
+        hits,
+        Line::from(vec![
+            Span::styled(
+                " ? ",
+                Style::default().fg(Color::Black).bg(theme::WARN).bold(),
+            ),
+            Span::styled(
+                format!(" approval required: {}", req.tool),
+                Style::default()
+                    .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        None,
+    );
+    push_transcript_line(lines, hits, Line::default(), None);
+    for text_line in wrap_text(&req.description, width) {
+        push_transcript_line(
+            lines,
+            hits,
+            Line::from(Span::styled(text_line, Style::default().fg(theme::TEXT))),
+            None,
+        );
+    }
+    push_transcript_line(lines, hits, Line::default(), None);
+    push_transcript_line(
+        lines,
+        hits,
+        Line::from(Span::styled(
+            " Input ",
+            Style::default()
+                .fg(theme::MUTED)
+                .add_modifier(Modifier::BOLD),
+        )),
+        None,
+    );
+    push_wrapped_plain_lines(
+        lines,
+        hits,
+        &req.input,
+        width,
+        Style::default().fg(theme::MUTED),
+    );
+    push_transcript_line(
+        lines,
+        hits,
+        Line::from(Span::styled(
+            " Reply with y/yes or n/no, then press Enter.",
+            Style::default().fg(theme::MUTED),
+        )),
+        None,
+    );
+    push_transcript_line(lines, hits, Line::default(), None);
 }
 
 fn parse_md_line(line: &str) -> Line<'static> {
@@ -495,6 +708,7 @@ pub fn run_blocking(
     state: Arc<Mutex<TuiSessionState>>,
     cmd_tx: UnboundedSender<TuiCmd>,
     question_answer_tx: Option<UnboundedSender<(String, QuestionSelection)>>,
+    approval_answer_tx: Option<UnboundedSender<(String, bool)>>,
     show_run_banner: bool,
 ) -> anyhow::Result<()> {
     let mut terminal = setup_terminal()?;
@@ -502,7 +716,7 @@ pub fn run_blocking(
     if show_run_banner {
         if let Ok(mut g) = state.lock() {
             g.blocks.push(DisplayBlock::System(
-                "Interactive run — type a message, Tab cycles agent profile.".into(),
+                "Interactive run — type a message, Tab cycles agent profile, Ctrl+P opens commands.".into(),
             ));
         }
     }
@@ -519,7 +733,8 @@ pub fn run_blocking(
 
             terminal.draw(|frame| {
                 let area = frame.area();
-                let (tr, st_r, slash_opt, inp_r) = layout_chunks(area, slash_h);
+                let (main_area, sidebar_opt) = layout_with_sidebar(area);
+                let (tr, st_r, slash_opt, inp_r) = layout_chunks(main_area, slash_h);
 
                 let transcript_h = tr.height.saturating_sub(2) as usize;
                 let inner_w = tr.width.saturating_sub(2);
@@ -555,46 +770,180 @@ pub fn run_blocking(
 
                 frame.render_widget(main, tr);
 
+                if let Some(sidebar) = sidebar_opt {
+                    let sections = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(9),
+                            Constraint::Length(8),
+                            Constraint::Min(7),
+                        ])
+                        .split(sidebar);
+
+                    let session_lines = vec![
+                        Line::from(format!("session {}", &g.session_id[..8.min(g.session_id.len())])),
+                        Line::from(format!("model   {}", g.model)),
+                        Line::from(format!("agent   {}", g.agent_profile)),
+                        Line::from(format!("mode    {}", g.permission_mode)),
+                        Line::from(format!(
+                            "status  {}",
+                            if g.busy { "busy" } else { "idle" }
+                        )),
+                        Line::from(format!("blocks  {}", g.blocks.len())),
+                        Line::from(format!("lines   {total}")),
+                    ];
+                    let session_block = Paragraph::new(Text::from(session_lines))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(theme::BORDER))
+                                .title(Span::styled(
+                                    " context ",
+                                    Style::default().fg(theme::MUTED),
+                                )),
+                        )
+                        .style(Style::default().bg(theme::SURFACE))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(session_block, sections[0]);
+
+                    let usage_lines = vec![
+                        Line::from(format!("input   {}", g.input_tokens)),
+                        Line::from(format!("output  {}", g.output_tokens)),
+                        Line::from(format!("total   {}", g.input_tokens + g.output_tokens)),
+                        Line::from(format!("cost    ${:.4}", g.cost_usd)),
+                        Line::default(),
+                        Line::from(if g.active_approval.is_some() {
+                            "pending approval"
+                        } else if g.active_question.is_some() {
+                            "pending question"
+                        } else {
+                            "no pending prompt"
+                        }),
+                    ];
+                    let usage_block = Paragraph::new(Text::from(usage_lines))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(theme::BORDER))
+                                .title(Span::styled(
+                                    " usage ",
+                                    Style::default().fg(theme::MUTED),
+                                )),
+                        )
+                        .style(Style::default().bg(theme::SURFACE))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(usage_block, sections[1]);
+
+                    let todo_lines = vec![
+                        Line::from(Span::styled(
+                            "task/todo area reserved",
+                            Style::default().fg(theme::TEXT),
+                        )),
+                        Line::default(),
+                        Line::from(Span::styled(
+                            "future sidebar ideas:",
+                            Style::default()
+                                .fg(theme::MUTED)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from("current task summary"),
+                        Line::from("checklist items"),
+                        Line::from("blockers and notes"),
+                        Line::default(),
+                        Line::from(Span::styled(
+                            "Ctrl+P opens commands",
+                            Style::default().fg(theme::USER),
+                        )),
+                    ];
+                    let todo_block = Paragraph::new(Text::from(todo_lines))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(theme::BORDER))
+                                .title(Span::styled(
+                                    " sidebar ",
+                                    Style::default().fg(theme::MUTED),
+                                )),
+                        )
+                        .style(Style::default().bg(theme::SURFACE))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(todo_block, sections[2]);
+                }
+
                 let elapsed = g.started.elapsed().as_secs();
                 let busy = if g.busy {
                     Span::styled(" ● busy ", Style::default().fg(theme::WARN))
                 } else {
                     Span::styled(" ○ idle ", Style::default().fg(theme::SUCCESS))
                 };
+                let approval_hint = if g.active_approval.is_some() {
+                    Span::styled(" !approve ", Style::default().fg(theme::ERROR))
+                } else {
+                    Span::raw("")
+                };
                 let q_hint = if g.active_question.is_some() {
                     Span::styled(" ?answer ", Style::default().fg(theme::WARN))
                 } else {
                     Span::raw("")
                 };
-                let status = Line::from(vec![
+                // Session / tokens / cost live in the sidebar; keep the bar short and obvious about bypass.
+                let perm_span = if toolbar_permission_is_bypass(&g.permission_mode) {
+                    Span::styled(
+                        " BYPASS — tools run without approval ",
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(theme::ERROR)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::styled(
+                        format!(" perm:{} ", g.permission_mode),
+                        Style::default().fg(theme::MUTED),
+                    )
+                };
+                let time_span = Span::styled(
+                    format!("{:02}:{:02}", elapsed / 60, elapsed % 60),
+                    Style::default().fg(theme::MUTED),
+                );
+                let mut status_spans = vec![
                     busy,
+                    approval_hint,
                     q_hint,
                     Span::raw(" │ "),
                     Span::styled(&g.model, Style::default().fg(theme::USER)),
                     Span::raw(" │ "),
-                    Span::styled(
-                        format!("{}", &g.session_id[..8.min(g.session_id.len())]),
-                        Style::default().fg(theme::MUTED),
-                    ),
-                    Span::raw(" │ "),
                     Span::styled(&g.agent_profile, Style::default().fg(theme::ASSISTANT)),
                     Span::raw(" │ "),
-                    Span::styled(&g.permission_mode, Style::default().fg(theme::MUTED)),
-                    Span::raw(" │ in:"),
-                    Span::styled(format!("{}", g.input_tokens), Style::default().fg(theme::TEXT)),
-                    Span::raw(" out:"),
-                    Span::styled(format!("{}", g.output_tokens), Style::default().fg(theme::TEXT)),
-                    Span::raw(" │ $"),
-                    Span::styled(
-                        format!("{:.4}", g.cost_usd),
-                        Style::default().fg(theme::SUCCESS),
-                    ),
-                    Span::raw(" │ "),
-                    Span::styled(
-                        format!("{:02}:{:02}", elapsed / 60, elapsed % 60),
+                    perm_span,
+                ];
+                // Sidebar is hidden on narrow terminals — put session/tokens/cost back on the bar.
+                if sidebar_opt.is_none() {
+                    status_spans.push(Span::raw(" │ "));
+                    status_spans.push(Span::styled(
+                        format!("{}", &g.session_id[..8.min(g.session_id.len())]),
                         Style::default().fg(theme::MUTED),
-                    ),
-                ]);
+                    ));
+                    status_spans.extend([
+                        Span::raw(" │ in:"),
+                        Span::styled(
+                            format!("{}", g.input_tokens),
+                            Style::default().fg(theme::TEXT),
+                        ),
+                        Span::raw(" out:"),
+                        Span::styled(
+                            format!("{}", g.output_tokens),
+                            Style::default().fg(theme::TEXT),
+                        ),
+                        Span::raw(" │ $"),
+                        Span::styled(
+                            format!("{:.4}", g.cost_usd),
+                            Style::default().fg(theme::SUCCESS),
+                        ),
+                    ]);
+                }
+                status_spans.push(Span::raw(" │ "));
+                status_spans.push(time_span);
+                let status = Line::from(status_spans);
                 let bar = Paragraph::new(status).style(Style::default().bg(theme::SURFACE));
                 frame.render_widget(bar, st_r);
 
@@ -664,21 +1013,28 @@ pub fn run_blocking(
                     ),
                 ]);
 
-                let hint = if g.active_question.is_some() {
+                let hint = if g.active_approval.is_some() {
+                    Line::from(Span::styled(
+                        "Approval pending: type y/yes to approve or n/no to deny, then press Enter",
+                        Style::default().fg(theme::ERROR),
+                    ))
+                } else if g.active_question.is_some() {
                     Line::from(Span::styled(
                         "Enter / 0 = suggested · 1–n = option · click underlined line · /auto-answer · End = transcript bottom (empty input)",
                         Style::default().fg(theme::WARN),
                     ))
                 } else if g.input_buffer.is_empty() {
                     Line::from(Span::styled(
-                        "Enter send · Tab agent · / for commands · Esc exit · Ctrl+L clear",
+                        "Enter send · Tab agent · / inline commands · Ctrl+P command palette · Esc exit · Ctrl+L clear",
                         Style::default().fg(theme::MUTED),
                     ))
                 } else {
                     Line::default()
                 };
 
-                let input_title = if g.active_question.is_some() {
+                let input_title = if g.active_approval.is_some() {
+                    " approval "
+                } else if g.active_question.is_some() {
                     " answer "
                 } else {
                     " message "
@@ -693,6 +1049,75 @@ pub fn run_blocking(
                     .style(Style::default().bg(theme::SURFACE));
 
                 frame.render_widget(input_block, inp_r);
+
+                if g.command_palette_open {
+                    let filtered = filter_command_palette(&g.command_palette_query);
+                    let rows = filtered.len().clamp(1, COMMAND_PALETTE_MAX_ROWS) as u16;
+                    let popup_area =
+                        centered_rect(area, COMMAND_PALETTE_WIDTH, rows.saturating_add(6));
+                    let pick = g
+                        .slash_menu_index
+                        .min(filtered.len().saturating_sub(1));
+                    let list_scroll = pick.saturating_sub(COMMAND_PALETTE_MAX_ROWS / 2);
+                    let list_end = (list_scroll + COMMAND_PALETTE_MAX_ROWS).min(filtered.len());
+                    let mut popup_lines = vec![
+                        Line::from(vec![
+                            Span::styled(
+                                " Search ",
+                                Style::default()
+                                    .fg(theme::MUTED)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                if g.command_palette_query.is_empty() {
+                                    "type to filter"
+                                } else {
+                                    g.command_palette_query.as_str()
+                                },
+                                Style::default().fg(theme::TEXT),
+                            ),
+                        ]),
+                        Line::default(),
+                    ];
+                    if filtered.is_empty() {
+                        popup_lines.push(Line::from(Span::styled(
+                            " No matching commands",
+                            Style::default().fg(theme::MUTED),
+                        )));
+                    } else {
+                        for (idx, cmd) in filtered[list_scroll..list_end].iter().enumerate() {
+                            let global = list_scroll + idx;
+                            let style = if global == pick {
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(theme::USER)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme::TEXT)
+                            };
+                            popup_lines.push(Line::from(Span::styled(format!(" {cmd}"), style)));
+                        }
+                    }
+                    popup_lines.push(Line::default());
+                    popup_lines.push(Line::from(Span::styled(
+                        " Enter apply · Esc close ",
+                        Style::default().fg(theme::MUTED),
+                    )));
+                    frame.render_widget(ClearWidget, popup_area);
+                    let popup = Paragraph::new(Text::from(popup_lines))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(theme::BORDER))
+                                .title(Span::styled(
+                                    " commands ",
+                                    Style::default().fg(theme::MUTED),
+                                )),
+                        )
+                        .style(Style::default().bg(theme::SURFACE))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(popup, popup_area);
+                }
             })?;
         }
 
@@ -701,12 +1126,14 @@ pub fn run_blocking(
             let mut g = state.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
             match ev {
+                Event::Mouse(_) if g.command_palette_open => continue,
                 Event::Mouse(m) => {
                     let sz = terminal.size()?;
                     let area = Rect::new(0, 0, sz.width, sz.height);
+                    let (main_area, _) = layout_with_sidebar(area);
                     let filtered = filter_slash_commands(&g.input_buffer);
                     let sh = slash_panel_height(filtered.len());
-                    let (tr, _, slash_r, _) = layout_chunks(area, sh);
+                    let (tr, _, slash_r, _) = layout_chunks(main_area, sh);
 
                     if rect_contains(tr, m.column, m.row) {
                         let inner_w = tr.width.saturating_sub(2);
@@ -765,7 +1192,10 @@ pub fn run_blocking(
                             let inner_y = m.row.saturating_sub(sr.y).saturating_sub(1);
                             let n_show = filtered.len().min(SLASH_PANEL_MAX_ROWS);
                             let max_scroll = filtered.len().saturating_sub(n_show);
-                            let list_scroll = g.slash_menu_index.saturating_sub(n_show.saturating_sub(1)).min(max_scroll);
+                            let list_scroll = g
+                                .slash_menu_index
+                                .saturating_sub(n_show.saturating_sub(1))
+                                .min(max_scroll);
                             if (inner_y as usize) < n_show {
                                 let idx = list_scroll + inner_y as usize;
                                 if idx < filtered.len() {
@@ -777,173 +1207,261 @@ pub fn run_blocking(
                         }
                     }
                 }
-                Event::Key(key) => match (key.code, key.modifiers) {
-                    (KeyCode::Esc, _) => {
-                        g.should_exit = true;
-                        let _ = cmd_tx.send(TuiCmd::Exit);
-                        break;
+                Event::Key(key) => {
+                    if g.command_palette_open {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                                g.command_palette_open = false;
+                                g.command_palette_query.clear();
+                                g.slash_menu_index = 0;
+                            }
+                            (KeyCode::Up, _) => {
+                                g.slash_menu_index = g.slash_menu_index.saturating_sub(1);
+                            }
+                            (KeyCode::Down, _) => {
+                                let filtered = filter_command_palette(&g.command_palette_query);
+                                if !filtered.is_empty() {
+                                    g.slash_menu_index = (g.slash_menu_index + 1) % filtered.len();
+                                }
+                            }
+                            (KeyCode::Enter, _) => {
+                                let filtered = filter_command_palette(&g.command_palette_query);
+                                if let Some(cmd) = filtered
+                                    .get(g.slash_menu_index.min(filtered.len().saturating_sub(1)))
+                                {
+                                    g.input_buffer = (*cmd).to_string();
+                                    g.cursor_char_idx = g.input_buffer.chars().count();
+                                }
+                                g.command_palette_open = false;
+                                g.command_palette_query.clear();
+                                g.slash_menu_index = 0;
+                            }
+                            (KeyCode::Backspace, _) => {
+                                g.command_palette_query.pop();
+                                let filtered = filter_command_palette(&g.command_palette_query);
+                                if filtered.is_empty() {
+                                    g.slash_menu_index = 0;
+                                } else {
+                                    g.slash_menu_index =
+                                        g.slash_menu_index.min(filtered.len().saturating_sub(1));
+                                }
+                            }
+                            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                                g.command_palette_query.push(c);
+                                let filtered = filter_command_palette(&g.command_palette_query);
+                                if filtered.is_empty() {
+                                    g.slash_menu_index = 0;
+                                } else {
+                                    g.slash_menu_index =
+                                        g.slash_menu_index.min(filtered.len().saturating_sub(1));
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
                     }
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                        let _ = cmd_tx.send(TuiCmd::CancelTurn);
-                    }
-                    (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
-                        g.blocks.clear();
-                        g.streaming_assistant = None;
-                        g.scroll_lines = 0;
-                        g.transcript_follow_tail = true;
-                    }
-                    (KeyCode::Tab, _) => {
-                        let filtered = filter_slash_commands(&g.input_buffer);
-                        if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
-                            let pick = g.slash_menu_index % filtered.len();
-                            g.input_buffer = filtered[pick].to_string();
-                            g.cursor_char_idx = g.input_buffer.chars().count();
-                        } else {
+
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Esc, _) => {
+                            g.should_exit = true;
+                            let _ = cmd_tx.send(TuiCmd::Exit);
+                            break;
+                        }
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            let _ = cmd_tx.send(TuiCmd::CancelTurn);
+                        }
+                        (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
+                            g.blocks.clear();
+                            g.streaming_assistant = None;
+                            g.scroll_lines = 0;
+                            g.transcript_follow_tail = true;
+                        }
+                        (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                            g.command_palette_open = true;
+                            g.command_palette_query.clear();
+                            g.slash_menu_index = 0;
+                        }
+                        (KeyCode::Tab, _) => {
+                            let filtered = filter_slash_commands(&g.input_buffer);
+                            if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                                let pick = g.slash_menu_index % filtered.len();
+                                g.input_buffer = filtered[pick].to_string();
+                                g.cursor_char_idx = g.input_buffer.chars().count();
+                            } else {
+                                drop(g);
+                                let _ = cmd_tx.send(TuiCmd::CycleAgent);
+                            }
+                        }
+                        (KeyCode::Enter, _) => {
+                            let line = std::mem::take(&mut g.input_buffer);
+                            g.cursor_char_idx = 0;
+                            g.slash_menu_index = 0;
+                            let active_approval = g.active_approval.clone();
+                            let active_q = g.active_question.clone();
+                            if let Some(req) = active_approval {
+                                let verdict = match line.trim().to_ascii_lowercase().as_str() {
+                                    "y" | "yes" => Some(true),
+                                    "n" | "no" => Some(false),
+                                    _ => None,
+                                };
+                                if let Some(approved) = verdict {
+                                    let call_id = req.call_id.clone();
+                                    drop(g);
+                                    if let Some(ref tx) = approval_answer_tx {
+                                        let _ = tx.send((call_id, approved));
+                                    } else {
+                                        let _ = cmd_tx.send(TuiCmd::CancelTurn);
+                                    }
+                                    continue;
+                                }
+                                g.blocks.push(DisplayBlock::System(
+                                    "Invalid approval answer: use y/yes or n/no.".into(),
+                                ));
+                                continue;
+                            }
+                            if let Some(ref q) = active_q {
+                                let t = line.trim();
+                                // `/auto-answer` must go through the side channel: `run_turn` is often
+                                // blocked on this question, so `cmd_rx` is not polled for Submit.
+                                if t == "/auto-answer" {
+                                    let qid = q.question_id.clone();
+                                    drop(g);
+                                    if let Some(ref tx) = question_answer_tx {
+                                        let _ = tx.send((qid, QuestionSelection::Suggested));
+                                    } else {
+                                        let _ = cmd_tx.send(TuiCmd::QuestionAnswer(
+                                            QuestionSelection::Suggested,
+                                        ));
+                                    }
+                                    continue;
+                                }
+                                if t.starts_with('/') {
+                                    drop(g);
+                                    let _ = cmd_tx.send(TuiCmd::Submit(line));
+                                    continue;
+                                }
+                                if let Some(sel) = parse_tui_question_answer(&line, q) {
+                                    let qid = q.question_id.clone();
+                                    drop(g);
+                                    if let Some(ref tx) = question_answer_tx {
+                                        let _ = tx.send((qid, sel));
+                                    } else {
+                                        let _ = cmd_tx.send(TuiCmd::QuestionAnswer(sel));
+                                    }
+                                    continue;
+                                }
+                                g.blocks.push(DisplayBlock::System(
+                                    "Invalid answer: use Enter/0 for suggested, 1–n for an option, or custom text."
+                                        .into(),
+                                ));
+                                continue;
+                            }
                             drop(g);
-                            let _ = cmd_tx.send(TuiCmd::CycleAgent);
+                            let _ = cmd_tx.send(TuiCmd::Submit(line));
                         }
-                    }
-                    (KeyCode::Enter, _) => {
-                        let line = std::mem::take(&mut g.input_buffer);
-                        g.cursor_char_idx = 0;
-                        g.slash_menu_index = 0;
-                        let active_q = g.active_question.clone();
-                        if let Some(ref q) = active_q {
-                            let t = line.trim();
-                            // `/auto-answer` must go through the side channel: `run_turn` is often
-                            // blocked on this question, so `cmd_rx` is not polled for Submit.
-                            if t == "/auto-answer" {
-                                let qid = q.question_id.clone();
-                                drop(g);
-                                if let Some(ref tx) = question_answer_tx {
-                                    let _ = tx.send((qid, QuestionSelection::Suggested));
-                                } else {
-                                    let _ = cmd_tx.send(TuiCmd::QuestionAnswer(
-                                        QuestionSelection::Suggested,
-                                    ));
-                                }
-                                continue;
-                            }
-                            if t.starts_with('/') {
-                                drop(g);
-                                let _ = cmd_tx.send(TuiCmd::Submit(line));
-                                continue;
-                            }
-                            if let Some(sel) = parse_tui_question_answer(&line, q) {
-                                let qid = q.question_id.clone();
-                                drop(g);
-                                if let Some(ref tx) = question_answer_tx {
-                                    let _ = tx.send((qid, sel));
-                                } else {
-                                    let _ = cmd_tx.send(TuiCmd::QuestionAnswer(sel));
-                                }
-                                continue;
-                            }
-                            g.blocks.push(DisplayBlock::System(
-                                "Invalid answer: use Enter/0 for suggested, 1–n for an option, or custom text."
-                                    .into(),
-                            ));
-                            continue;
+                        (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
+                            g.cursor_char_idx = 0;
                         }
-                        drop(g);
-                        let _ = cmd_tx.send(TuiCmd::Submit(line));
-                    }
-                    (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
-                        g.cursor_char_idx = 0;
-                    }
-                    (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-                        g.cursor_char_idx = g.input_buffer.chars().count();
-                    }
-                    (KeyCode::End, _) => {
-                        if !g.input_buffer.is_empty() {
+                        (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
                             g.cursor_char_idx = g.input_buffer.chars().count();
-                        } else {
-                            let sz = terminal.size().ok();
-                            if let Some(sz) = sz {
-                                let area = Rect::new(0, 0, sz.width, sz.height);
-                                let sh =
-                                    slash_panel_height(filter_slash_commands(&g.input_buffer).len());
-                                let (tr, _, _, _) = layout_chunks(area, sh);
-                                let total = transcript_lines(&g, tr.width.saturating_sub(2)).len();
-                                let th = tr.height.saturating_sub(2) as usize;
-                                let max_scroll = total.saturating_sub(th);
-                                g.transcript_follow_tail = true;
-                                g.scroll_lines = max_scroll;
-                            }
                         }
-                    }
-                    (KeyCode::Left, _) => {
-                        g.cursor_char_idx = g.cursor_char_idx.saturating_sub(1);
-                    }
-                    (KeyCode::Right, _) => {
-                        let max = g.input_buffer.chars().count();
-                        g.cursor_char_idx = (g.cursor_char_idx + 1).min(max);
-                    }
-                    (KeyCode::Up, _) => {
-                        let filtered = filter_slash_commands(&g.input_buffer);
-                        if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
-                            g.slash_menu_index = g.slash_menu_index.saturating_sub(1);
-                        } else {
-                            g.transcript_follow_tail = false;
-                            g.scroll_lines = g.scroll_lines.saturating_sub(1);
-                        }
-                    }
-                    (KeyCode::Down, _) => {
-                        let filtered = filter_slash_commands(&g.input_buffer);
-                        if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
-                            let n = filtered.len();
-                            g.slash_menu_index = (g.slash_menu_index + 1) % n;
-                        } else {
-                            let sz = terminal.size().ok();
-                            if let Some(sz) = sz {
-                                let area = Rect::new(0, 0, sz.width, sz.height);
-                                let sh = slash_panel_height(filter_slash_commands(&g.input_buffer).len());
-                                let (tr, _, _, _) = layout_chunks(area, sh);
-                                let lines = transcript_lines(&g, tr.width.saturating_sub(2));
-                                let total = lines.len();
-                                let th = tr.height.saturating_sub(2) as usize;
-                                let max_scroll = total.saturating_sub(th);
-                                g.scroll_lines = (g.scroll_lines + 1).min(max_scroll);
-                                if g.scroll_lines >= max_scroll {
+                        (KeyCode::End, _) => {
+                            if !g.input_buffer.is_empty() {
+                                g.cursor_char_idx = g.input_buffer.chars().count();
+                            } else {
+                                let sz = terminal.size().ok();
+                                if let Some(sz) = sz {
+                                    let area = Rect::new(0, 0, sz.width, sz.height);
+                                    let (main_area, _) = layout_with_sidebar(area);
+                                    let sh = slash_panel_height(
+                                        filter_slash_commands(&g.input_buffer).len(),
+                                    );
+                                    let (tr, _, _, _) = layout_chunks(main_area, sh);
+                                    let total =
+                                        transcript_lines(&g, tr.width.saturating_sub(2)).len();
+                                    let th = tr.height.saturating_sub(2) as usize;
+                                    let max_scroll = total.saturating_sub(th);
                                     g.transcript_follow_tail = true;
+                                    g.scroll_lines = max_scroll;
                                 }
                             }
                         }
-                    }
-                    (KeyCode::Backspace, _) => {
-                        if g.cursor_char_idx > 0 {
+                        (KeyCode::Left, _) => {
+                            g.cursor_char_idx = g.cursor_char_idx.saturating_sub(1);
+                        }
+                        (KeyCode::Right, _) => {
+                            let max = g.input_buffer.chars().count();
+                            g.cursor_char_idx = (g.cursor_char_idx + 1).min(max);
+                        }
+                        (KeyCode::Up, _) => {
+                            let filtered = filter_slash_commands(&g.input_buffer);
+                            if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                                g.slash_menu_index = g.slash_menu_index.saturating_sub(1);
+                            } else {
+                                g.transcript_follow_tail = false;
+                                g.scroll_lines = g.scroll_lines.saturating_sub(1);
+                            }
+                        }
+                        (KeyCode::Down, _) => {
+                            let filtered = filter_slash_commands(&g.input_buffer);
+                            if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                                let n = filtered.len();
+                                g.slash_menu_index = (g.slash_menu_index + 1) % n;
+                            } else {
+                                let sz = terminal.size().ok();
+                                if let Some(sz) = sz {
+                                    let area = Rect::new(0, 0, sz.width, sz.height);
+                                    let (main_area, _) = layout_with_sidebar(area);
+                                    let sh = slash_panel_height(
+                                        filter_slash_commands(&g.input_buffer).len(),
+                                    );
+                                    let (tr, _, _, _) = layout_chunks(main_area, sh);
+                                    let lines = transcript_lines(&g, tr.width.saturating_sub(2));
+                                    let total = lines.len();
+                                    let th = tr.height.saturating_sub(2) as usize;
+                                    let max_scroll = total.saturating_sub(th);
+                                    g.scroll_lines = (g.scroll_lines + 1).min(max_scroll);
+                                    if g.scroll_lines >= max_scroll {
+                                        g.transcript_follow_tail = true;
+                                    }
+                                }
+                            }
+                        }
+                        (KeyCode::Backspace, _) => {
+                            if g.cursor_char_idx > 0 {
+                                let idx = g.cursor_char_idx;
+                                let mut cs: Vec<char> = g.input_buffer.chars().collect();
+                                cs.remove(idx - 1);
+                                g.input_buffer = cs.into_iter().collect();
+                                g.cursor_char_idx -= 1;
+                                if slash_panel_visible(&g.input_buffer) {
+                                    let f = filter_slash_commands(&g.input_buffer);
+                                    if !f.is_empty() {
+                                        g.slash_menu_index =
+                                            g.slash_menu_index.min(f.len().saturating_sub(1));
+                                    } else {
+                                        g.slash_menu_index = 0;
+                                    }
+                                }
+                            }
+                        }
+                        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                             let idx = g.cursor_char_idx;
                             let mut cs: Vec<char> = g.input_buffer.chars().collect();
-                            cs.remove(idx - 1);
+                            cs.insert(idx, c);
                             g.input_buffer = cs.into_iter().collect();
-                            g.cursor_char_idx -= 1;
+                            g.cursor_char_idx += 1;
                             if slash_panel_visible(&g.input_buffer) {
                                 let f = filter_slash_commands(&g.input_buffer);
                                 if !f.is_empty() {
                                     g.slash_menu_index =
                                         g.slash_menu_index.min(f.len().saturating_sub(1));
-                                } else {
-                                    g.slash_menu_index = 0;
                                 }
                             }
                         }
+                        _ => {}
                     }
-                    (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                        let idx = g.cursor_char_idx;
-                        let mut cs: Vec<char> = g.input_buffer.chars().collect();
-                        cs.insert(idx, c);
-                        g.input_buffer = cs.into_iter().collect();
-                        g.cursor_char_idx += 1;
-                        if slash_panel_visible(&g.input_buffer) {
-                            let f = filter_slash_commands(&g.input_buffer);
-                            if !f.is_empty() {
-                                g.slash_menu_index =
-                                    g.slash_menu_index.min(f.len().saturating_sub(1));
-                            }
-                        }
-                    }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }

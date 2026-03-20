@@ -136,9 +136,8 @@ async fn resume_targets_session_with_latest_updated_at() {
         SessionStatus::Completed,
     );
 
-    let store = nca_runtime::session_store::SessionStore::new(
-        temp.path().join(".nca").join("sessions"),
-    );
+    let store =
+        nca_runtime::session_store::SessionStore::new(temp.path().join(".nca").join("sessions"));
     let ids = store.list().await.expect("list");
     let mut latest: Option<(String, chrono::DateTime<Utc>)> = None;
     for id in ids {

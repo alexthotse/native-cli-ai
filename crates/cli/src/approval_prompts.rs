@@ -6,12 +6,12 @@
 //! - Confirmation prompts with help text
 //! - Multi-select for batch approvals
 
+use cli_prompts::{
+    DisplayPrompt,
+    prompts::{AbortReason, Confirmation},
+};
 use nca_common::tool::ToolCall;
 use nca_core::approval::ApprovalHandler;
-use cli_prompts::{
-    prompts::{Confirmation, AbortReason},
-    DisplayPrompt,
-};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -61,12 +61,12 @@ impl InteractiveApprovalHandler {
 
         let prompt_msg = if description.is_empty() {
             format!(
-                "Tool '{}' wants to execute:\n\n{}",
+                "Tool '{}' wants to execute:\n\nInput preview:\n{}",
                 tool_name, input_preview
             )
         } else {
             format!(
-                "{}\n\nTool: {}\nInput preview: {}",
+                "{}\n\nTool: {}\nInput preview:\n{}",
                 description, tool_name, input_preview
             )
         };
@@ -84,7 +84,10 @@ impl InteractiveApprovalHandler {
 
     fn show_tool_details(&self, call: &ToolCall) {
         println!("\n╭─────────────────────────────────────────────────────────────╮");
-        println!("│ Tool: {}                                                   ", call.name);
+        println!(
+            "│ Tool: {}                                                   ",
+            call.name
+        );
         println!("├─────────────────────────────────────────────────────────────┤");
 
         let json_str = format_json_pretty(&call.input);
@@ -134,12 +137,12 @@ impl InteractiveIpcApprovalHandler {
 
         let prompt_msg = if description.is_empty() {
             format!(
-                "Tool '{}' wants to execute:\n\n{}",
+                "Tool '{}' wants to execute:\n\nInput preview:\n{}",
                 tool_name, input_preview
             )
         } else {
             format!(
-                "{}\n\nTool: {}\nInput: {}",
+                "{}\n\nTool: {}\nInput preview:\n{}",
                 description, tool_name, input_preview
             )
         };
@@ -218,8 +221,9 @@ pub mod legacy {
             let mut reader = BufReader::new(stdin);
 
             let prompt = format!(
-                "\n[approval] {description}\nTool: {}\nInput: {}\nApprove? [y/N]: ",
-                call.name, call.input
+                "\n[approval] {description}\nTool: {}\nInput preview:\n{}\nApprove? [y/N]: ",
+                call.name,
+                truncate(&format_json_pretty(&call.input), 200)
             );
             if stderr.write_all(prompt.as_bytes()).await.is_err() {
                 return false;
