@@ -68,19 +68,6 @@ native-cli-ai/
 │   │       │   ├── diff.rs     # Colored diff display
 │   │       │   └── status.rs   # Cost bar, model info, mode indicator
 │   │       └── prompt.rs       # reedline-based input with completions
-│   │
-│   └── monitor/            # egui desktop app (Phase 2)
-│       ├── Cargo.toml
-│       └── src/
-│           ├── main.rs         # eframe launch
-│           ├── app.rs          # MonitorApp state
-│           ├── panels/
-│           │   ├── sessions.rs # Session list and selector
-│           │   ├── terminal.rs # Live terminal mirror
-│           │   ├── tools.rs    # Tool call history
-│           │   ├── diff.rs     # Diff viewer
-│           │   └── stats.rs    # Token usage, cost, model info
-│           └── ipc_client.rs   # Connects to runtime IPC
 │
 ├── docs/
 │   ├── prd.md
@@ -101,7 +88,6 @@ flowchart TD
   Core[core]
   Runtime[runtime]
   Cli[cli]
-  Monitor[monitor]
 
   Core --> Common
   Runtime --> Common
@@ -109,45 +95,30 @@ flowchart TD
   Cli --> Common
   Cli --> Core
   Cli --> Runtime
-  Monitor --> Common
-  Monitor --> Runtime
 ```
 
-Key constraint: `monitor` depends on `common` and `runtime` (for `IpcClient`, `WorktreeManager`, and `WorkspaceRegistry`). It never imports `core` or `cli`. The CLI delegates session lifecycle to the runtime `Supervisor`.
+The CLI delegates session lifecycle to the runtime `Supervisor`.
 
-## Desktop-First Architecture
+## CLI-first architecture
 
-The desktop app (`nca-monitor`) is the primary user interface. The CLI remains as a secondary/debug interface.
+The terminal app (`nca`) is the primary interface. Session state and optional `NCA_ORCH_*` metadata stay local-first; use `nca` with JSON/NDJSON flags for automation.
 
 ```mermaid
 flowchart LR
-  DesktopApp[Desktop App] --> WorkspaceRegistry
-  DesktopApp --> CompanyProjectUi[CompanyProjectTodoAgent UI]
-  DesktopApp --> SessionHub[Session Index]
-  DesktopApp --> ReviewWorkbench
-  WorkspaceRegistry --> LocalMetadata["~/.nca/workspaces.json"]
-  CompanyProjectUi --> OrchestratorDb["~/.nca/orchestrator.db"]
-  SessionHub --> RuntimeService[Supervisor]
+  Cli[nca CLI] --> Config["~/.nca/config.toml"]
+  Cli --> RuntimeService[Supervisor]
   RuntimeService --> AgentRuns[AgentLoop]
-  RuntimeService --> EventStore[EventEnvelope logs]
-  RuntimeService --> OrchestratorStore[SQLite orchestration store]
+  RuntimeService --> EventStore["EventEnvelope logs"]
+  RuntimeService --> SessionFiles[".nca/sessions"]
   RuntimeService --> WorktreeManager
-  ReviewWorkbench --> GitInspector[git diff/status]
-  ReviewWorkbench --> MergeActions[git merge/worktree]
-  CliSecondary[CLI] --> RuntimeService
 ```
 
 ### Key modules
 
-- **`runtime::supervisor`**: Reusable session lifecycle manager. Both CLI and desktop use this.
-- **`runtime::workspace_registry`**: Persisted workspace index at `~/.nca/workspaces.json`.
-- **`runtime::orchestrator_store`**: SQLite-backed local store for companies, projects, todos, agents, mode preference, and run links.
+- **`runtime::supervisor`**: Session lifecycle manager used by the CLI (`nca serve`, attach, spawn, etc.).
+- **`runtime::session_store`**: Persist and load session JSON under `<workspace>/.nca/sessions/`.
 - **`runtime::worktree`**: Isolated git worktree creation, cleanup, and merge per agent run.
 - **`runtime::bash_tool`**: PTY-backed bash execution, registered by the supervisor.
-- **`monitor::workspaces`**: Desktop workspace view-model and navigation.
-- **`monitor::panels::review`**: Review workbench with changed files, diff viewer, and merge actions.
-- **`monitor::panels::files`**: Changed files browser.
-- **`monitor::panels::diff`**: Unified diff viewer with syntax coloring.
 
 ---
 
@@ -216,18 +187,15 @@ The runtime exposes a Unix domain socket at `$XDG_RUNTIME_DIR/nca/<session-id>.s
 ### Protocol
 
 - **Transport**: Unix stream socket, newline-delimited JSON.
-- **Direction**: The runtime is the server. CLI and monitor are clients.
+- **Direction**: The runtime is the server. The CLI (e.g. `nca attach`) connects as a client.
 - **Messages**: Every `AgentEvent` from `common::event` is wrapped in `EventEnvelope` and serialized to all connected clients. Persisted logs and live IPC use the same machine-readable shape.
 
 ```mermaid
 flowchart LR
   CliProcess[cli] -->|"connect"| Socket["Unix socket"]
   Socket --> RuntimeServer[runtime::IpcServer]
-  MonitorProcess[monitor] -->|"connect"| Socket
   RuntimeServer -->|"broadcast events"| CliProcess
-  RuntimeServer -->|"broadcast events"| MonitorProcess
   CliProcess -->|"send commands"| RuntimeServer
-  MonitorProcess -->|"send commands"| RuntimeServer
 ```
 
 ### Event Schema (common::event)
@@ -295,7 +263,7 @@ The CLI now exposes multiple session surfaces on top of the same engine:
 
 - `run` for explicit one-shot execution
 - `--run` for Claude-style interactive run mode
-- `serve` for long-lived IPC-controlled sessions (used by the desktop app)
+- `serve` for long-lived IPC-controlled sessions
 - `spawn` for background execution
 - `sessions` for saved-session listing
 - `resume` for continuing a saved session
@@ -356,9 +324,8 @@ Sessions are stored as JSON files in `.nca/sessions/<session-id>.json`:
 }
 ```
 
-The desktop orchestration layer uses a hybrid persistence model:
+Persistence is workspace-local:
 
-- `~/.nca/orchestrator.db` stores companies, projects, todos, agent profiles, run links, and desktop mode preference.
 - `<workspace>/.nca/sessions/*.json` stores session snapshots and conversation state.
 - `<workspace>/.nca/sessions/*.events.jsonl` stores append-only event streams for replay and live attach.
 
@@ -426,7 +393,7 @@ Config values are resolved with later sources overriding earlier ones:
 ## Build and Distribution
 
 - **Dev**: `cargo run -p nca-cli`
-- **Release**: `cargo build --release` produces two binaries: `nca` (cli) and `nca-monitor` (egui app).
-- **Install**: `cargo install --path crates/cli` and `cargo install --path crates/monitor`.
+- **Release**: `cargo build --release` produces `nca` (CLI).
+- **Install**: `cargo install --path crates/cli`.
 - **CI**: GitHub Actions with `cargo test --workspace`, `cargo clippy --workspace`, `cargo fmt --check`.
 - **Cross-compile**: Target `x86_64-unknown-linux-musl` for static Linux binaries. macOS and Windows use default targets.

@@ -27,8 +27,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
 /// Reusable runtime supervisor that owns session lifecycle, IPC, event fanout,
-/// and command handling. Both CLI and desktop app use this instead of managing
-/// the lifecycle directly.
+/// and command handling.
 pub struct Supervisor {
     pub session_id: String,
     pub workspace_root: PathBuf,
@@ -535,7 +534,6 @@ pub fn spawn_event_fanout(
 }
 
 /// Spawns a task that consumes IPC commands and resolves approvals/cancellation.
-/// Also handles desktop-oriented commands like QueryState and ListSessions.
 pub fn spawn_command_consumer(
     command_rx: mpsc::UnboundedReceiver<AgentCommand>,
     approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
@@ -548,7 +546,6 @@ pub fn spawn_command_consumer(
         None,
         None,
         None,
-        None,
     )
 }
 
@@ -558,12 +555,11 @@ pub enum SessionControlCommand {
     Shutdown,
 }
 
-/// Extended command consumer that can also answer query commands using a session store.
+/// Extended command consumer with optional event fanout, prompt forwarding, and session control.
 pub fn spawn_command_consumer_with_store(
     mut command_rx: mpsc::UnboundedReceiver<AgentCommand>,
     approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
     cancel_tx: Option<oneshot::Sender<()>>,
-    session_store: Option<SessionStore>,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
     prompt_tx: Option<mpsc::UnboundedSender<String>>,
     control_tx: Option<mpsc::UnboundedSender<SessionControlCommand>>,
@@ -631,68 +627,13 @@ pub fn spawn_command_consumer_with_store(
                             .await;
                     }
                 }
-                AgentCommand::QueryState { session_id } => {
-                    if let Some(ref store) = session_store {
-                        match store.load(&session_id).await {
-                            Ok(state) => {
-                                let resp = nca_common::event::AgentResponse::SessionState {
-                                    session: state,
-                                };
-                                if let Some(ref tx) = event_tx {
-                                    let _ = tx.send(AgentEvent::Response { response: resp }).await;
-                                }
-                            }
-                            Err(e) => {
-                                if let Some(ref tx) = event_tx {
-                                    let _ = tx
-                                        .send(AgentEvent::Error {
-                                            message: format!("QueryState failed: {e}"),
-                                        })
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                }
-                AgentCommand::ListSessions { workspace } => {
-                    let store = SessionStore::new(workspace.join(".nca").join("sessions"));
-                    match store.list().await {
-                        Ok(ids) => {
-                            let mut metas = Vec::new();
-                            for id in &ids {
-                                if let Ok(state) = store.load(id).await {
-                                    metas.push(state.meta);
-                                }
-                            }
-                            let resp =
-                                nca_common::event::AgentResponse::SessionList { sessions: metas };
-                            if let Some(ref tx) = event_tx {
-                                let _ = tx.send(AgentEvent::Response { response: resp }).await;
-                            }
-                        }
-                        Err(e) => {
-                            if let Some(ref tx) = event_tx {
-                                let _ = tx
-                                    .send(AgentEvent::Error {
-                                        message: format!("ListSessions failed: {e}"),
-                                    })
-                                    .await;
-                            }
-                        }
-                    }
-                }
-                AgentCommand::StartSession { .. } | AgentCommand::ResumeSession { .. } => {
-                    tracing::warn!(
-                        "StartSession/ResumeSession commands should be handled by the desktop app, not the command consumer"
-                    );
-                }
             }
         }
     })
 }
 
 /// IPC-based approval handler that waits for approve/deny commands from
-/// connected clients (monitor or CLI).
+/// connected clients (e.g. CLI over the session socket).
 pub struct IpcApprovalHandler {
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
 }
@@ -1131,10 +1072,7 @@ fn is_pid_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-    use nca_common::event::{AgentCommand, AgentEvent, AgentResponse};
-    use nca_common::session::{SessionMeta, SessionState, SessionStatus};
-    use tempfile::tempdir;
+    use nca_common::event::AgentCommand;
 
     #[tokio::test]
     async fn send_message_forwards_prompt_to_session_queue() {
@@ -1147,14 +1085,13 @@ mod tests {
             None,
             None,
             None,
-            None,
             Some(prompt_tx),
             Some(control_tx),
         );
 
         cmd_tx
             .send(AgentCommand::SendMessage {
-                content: "hello from monitor".into(),
+                content: "hello from ipc".into(),
             })
             .unwrap();
 
@@ -1162,77 +1099,7 @@ mod tests {
             .await
             .expect("prompt should be forwarded")
             .expect("prompt channel should remain open");
-        assert_eq!(received, "hello from monitor");
-
-        let _ = cmd_tx.send(AgentCommand::Shutdown);
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn query_state_emits_structured_response_event() {
-        let tmp = tempdir().unwrap();
-        let sessions_dir = tmp.path().join(".nca").join("sessions");
-        let store = SessionStore::new(&sessions_dir);
-        let now = Utc::now();
-        let state = SessionState {
-            meta: SessionMeta {
-                id: "session-test".into(),
-                created_at: now,
-                updated_at: now,
-                workspace: tmp.path().to_path_buf(),
-                model: "MiniMax-M2.5".into(),
-                status: SessionStatus::Running,
-                pid: None,
-                socket_path: None,
-                worktree_path: None,
-                branch: None,
-                base_branch: None,
-                parent_session_id: None,
-                child_session_ids: Vec::new(),
-                inherited_summary: None,
-                spawn_reason: None,
-                session_summary: None,
-                orchestration: None,
-            },
-            messages: Vec::new(),
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            estimated_cost_usd: 0.0,
-        };
-        store.save(&state).await.unwrap();
-
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let (event_tx, mut event_rx) = mpsc::channel(8);
-        let task = spawn_command_consumer_with_store(
-            cmd_rx,
-            None,
-            None,
-            Some(store),
-            Some(event_tx),
-            None,
-            None,
-        );
-
-        cmd_tx
-            .send(AgentCommand::QueryState {
-                session_id: "session-test".into(),
-            })
-            .unwrap();
-
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
-            .await
-            .expect("event should be emitted")
-            .expect("event channel should remain open");
-
-        match event {
-            AgentEvent::Response { response } => match response {
-                AgentResponse::SessionState { session } => {
-                    assert_eq!(session.meta.id, "session-test");
-                }
-                other => panic!("unexpected response payload: {other:?}"),
-            },
-            other => panic!("unexpected event: {other:?}"),
-        }
+        assert_eq!(received, "hello from ipc");
 
         let _ = cmd_tx.send(AgentCommand::Shutdown);
         task.abort();

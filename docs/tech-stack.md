@@ -131,15 +131,7 @@ This document records every dependency choice, the rationale behind it, and the 
 
 ## Local Persistence
 
-| Crate | Version | Role |
-|-------|---------|------|
-| `rusqlite` | 0.38.x | SQLite-backed orchestration store for companies, projects, todos, agents, and run links |
-
-**Why SQLite + rusqlite**: The desktop now needs relational local data for company/project/todo/agent orchestration without introducing a server or a hosted database. SQLite keeps setup zero-admin on macOS/Linux, while `rusqlite` is the simplest direct Rust integration for a local embedded control-plane store.
-
-**Hybrid model**: SQLite is the source of truth for orchestration entities and relationships. Session transcripts and event logs stay as JSON/JSONL artifacts in workspace-local `.nca/sessions/` folders.
-
-**Rejected for now**: Postgres (too much infrastructure for a local-first desktop), monitor-only JSON files (poor relational querying), fully remote control-plane storage (premature for the native desktop path).
+Session state and event streams are stored as JSON and JSONL under `<workspace>/.nca/sessions/` (see `runtime::session_store`). Global user config lives under `~/.nca/config.toml`. No separate SQLite control-plane database is used in this workspace.
 
 ---
 
@@ -184,7 +176,7 @@ This document records every dependency choice, the rationale behind it, and the 
 | `thiserror` | 2.x | Derive macros for error types |
 | `anyhow` | 1.x | Ergonomic error propagation in application code |
 
-**Convention**: Library crates (`core`, `common`, `runtime`) use `thiserror` for typed errors. Application crates (`cli`, `monitor`) use `anyhow` for convenience.
+**Convention**: Library crates (`core`, `common`, `runtime`) use `thiserror` for typed errors. The application crate (`cli`) uses `anyhow` for convenience.
 
 ---
 
@@ -194,26 +186,6 @@ This document records every dependency choice, the rationale behind it, and the 
 |-------|---------|------|
 | `tracing` | 0.1.x | Structured, async-aware instrumentation |
 | `tracing-subscriber` | 0.3.x | Log formatting and filtering |
-
----
-
-## Desktop Monitor (Phase 2)
-
-| Crate | Version | Role |
-|-------|---------|------|
-| `egui` | 0.30.x | Immediate-mode GUI framework |
-| `eframe` | 0.30.x | egui integration for native windowing |
-
-**Why egui**: Pure Rust, no webview, no JS. GPU-accelerated via wgpu or glow. Excellent for dashboards, log viewers, and control panels. Fast iteration with hot-reload support.
-
-**Rejected alternatives**:
-
-| Framework | Reason for rejection |
-|-----------|---------------------|
-| **Tauri** | Requires a webview and JS/HTML frontend. Violates the native-first constraint. |
-| **Dioxus Desktop** | Currently uses system webview under the hood (built on Wry/Tao). Same webview concern as Tauri for our purposes. |
-| **GPUI** | Promising (powers Zed), but pre-1.0, macOS-focused, limited docs, and smaller community. Higher risk for a secondary deliverable. |
-| **iced** | Pure Rust and native, but slower to build complex UIs with. Less widget variety than egui. |
 
 ---
 
@@ -237,5 +209,4 @@ crates/cli      -> common, core, runtime, clap, ratatui, crossterm, reedline,
                    syntect, pulldown-cmark, colored, anyhow, tracing, tokio
 crates/runtime  -> common, core, portable-pty, tokio, serde_json, tracing,
                    thiserror, ignore, walkdir
-crates/monitor  -> common, egui, eframe, tokio, serde_json, tracing, anyhow
 ```

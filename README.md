@@ -2,9 +2,29 @@
 
 ![nca hero](docs/images/nca-readme-hero.png)
 
-Rust-native AI agent orchestration for people who want a real CLI worker, not another web wrapper.
+`nca` is a Rust-native coding CLI for people who want something fast, local, and easy to run at scale. It starts quickly, stays light on memory, and is built for workflows where you may want to run **many agents and sub-agents in parallel** instead of babysitting one heavy session at a time.
 
-`nca` is built to harness the CLI as the execution layer for serious agent workflows: run foreground tasks, spawn background sessions, stream machine-readable events, attach later, and supervise everything from a native monitor. No JavaScript, no Electron, no browser dependency, just Rust and a sharp subprocess contract.
+The focus here is simple: keep making the CLI better. Better harnessing, better spawning, better tooling, and better machine-readable surfaces. No JavaScript, no Electron, no browser in the default path. Just one `nca` binary with Unix-socket IPC and JSON/NDJSON when you need automation.
+
+## Why nca
+
+Most coding CLIs are optimized for one interactive session. `nca` is aimed more at **worker-style usage**: spawn a task, attach later, run child agents in worktrees, and keep the overhead low enough that parallel runs are actually practical.
+
+| Why it matters | What you get |
+|----------------|--------------|
+| **Performance** | Fast startup and a tight Rust stack, so each new run stays cheap. |
+| **Low memory use** | You can keep many sessions and child runs around without paying for a heavy UI/runtime on each one. |
+| **Spawn-first workflows** | First-class `spawn`, `sessions`, `attach`, worktree-isolated **sub-agents**, and clear parent/child lineage. |
+| **Automation-friendly** | `run` / `spawn` / `status` / `cancel` with `--json`, NDJSON event streams, and `NCA_ORCH_*` metadata for external control planes. |
+
+This repo is **CLI-only**. If what you really want is a dashboard, a desktop shell, or higher-level agent orchestration, use a separate orchestration layer and let `nca` be the executor.
+
+## Desktop mode & agent orchestration
+
+If you want a **web dashboard**, multi-agent supervision, or a **desktop control plane**, this repository is not trying to do that itself. Instead, use an orchestration layer that can call `nca` through its [orchestration contract](docs/orchestration.md):
+
+- **[Paperclip](https://github.com/paperclipai/paperclip)** — an orchestration layer for coordinating many agents, goals, approvals, and governance.  
+- **[Enterprise Orchestration](https://github.com/madebyaris/enterprise-orchestration)** *(from us)* — a local-first desktop/control-plane project where **native-cli-ai** is a first-class executor target.
 
 ## Why Try It
 
@@ -12,18 +32,16 @@ Rust-native AI agent orchestration for people who want a real CLI worker, not an
 - MiniMax-first by default, with compatibility for OpenAI, Anthropic/Claude, and OpenRouter.
 - Headless-friendly JSON and NDJSON surfaces for orchestration systems.
 - Background sessions, event logs, attachable runs, and isolated child-agent worktrees.
-- Native desktop monitor with session visibility instead of a bolted-on web dashboard.
+- JSON/NDJSON surfaces for automation and subprocess integration.
 
 ## Product Direction
 
-The current focus is not just "a coding CLI."
+We are leaning further into the CLI instead of backing away from it: stronger harness defaults, fail-loud provider behavior, a richer tool surface, and stable event schemas for people building wrappers around `nca`.
 
-- `nca` is being shaped into an orchestration-grade CLI worker.
-- `nca-monitor` is the native oversight surface for watching, reviewing, and steering those runs.
-- `nca-monitor` now supports two desktop directions on the same backend: `Company AI` and `Project AI`.
-- The harness is opinionated toward plan-first execution, fail-loud behavior, and structured session lineage.
+- Session lifecycle, events, and approvals all use the same runtime IPC (`attach`, approvals, shutdown).
+- Child sessions get **git worktrees** and explicit lineage so parallel agents do not step on each other.
 
-If you want to wire an agent into a bigger control plane, this repo is aiming directly at that use case.
+If you are building a control plane, the intended split is straightforward: let `nca` stay the **lean worker process**, and let tools like Paperclip or Enterprise Orchestration handle dashboards, persistence, and fleet-level coordination.
 
 ## Quick Start
 
@@ -35,7 +53,6 @@ cargo build --release
 
 # Install locally
 cp target/release/nca /usr/local/bin/
-cp target/release/nca-monitor /usr/local/bin/
 
 # Configure MiniMax (default provider)
 export MINIMAX_API_KEY="your-api-key"
@@ -55,10 +72,9 @@ nca spawn --prompt "Inspect the repo and draft a plan"
 nca sessions
 nca status <session_id>
 nca attach <session_id>
-
-# Launch the native monitor
-nca-monitor
 ```
+
+The full-screen CLI cannot change your font from Rust—it follows your terminal’s monospace setting. For a modern look (and correct TUI alignment), see [CLI terminal fonts](docs/cli-terminal-fonts.md).
 
 ## Built For Agent Orchestration
 
@@ -70,10 +86,10 @@ nca-monitor
 - `NCA_ORCH_*` environment variables let orchestrators inject run metadata into session state and the harness.
 - Headless approval failures fail loudly instead of hanging forever.
 
-Desktop persistence uses a hybrid local-first model:
+Local persistence is workspace-first:
 
-- `~/.nca/orchestrator.db` for companies, projects, todos, agent profiles, and linked runs
 - `<workspace>/.nca/sessions/` for session snapshots and event logs
+- `~/.nca/config.toml` (and optional `.nca/config.local.toml`) for global settings
 
 See [Orchestration Contract](docs/orchestration.md) for the exact subprocess surface.
 
@@ -148,7 +164,6 @@ Current tool-running path supports:
 | `crates/core` | Agent loop, provider abstraction, harness, tools |
 | `crates/runtime` | IPC, session lifecycle, persistence, worktree/runtime glue |
 | `crates/cli` | Terminal entrypoint and machine-facing control plane |
-| `crates/monitor` | Native egui monitor for supervising sessions |
 
 ## Documentation
 
