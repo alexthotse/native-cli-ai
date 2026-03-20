@@ -6,6 +6,7 @@ license.workspace = true
 description = "PTY management, sandboxed process execution, IPC server, and session persistence"
 
 [dependencies]
+anyhow = { workspace = true }
 nca-common = { workspace = true }
 nca-core = { workspace = true }
 serde = { workspace = true }
