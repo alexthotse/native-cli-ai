@@ -37,6 +37,16 @@ pub struct ApprovalRequest {
     pub input: String,
 }
 
+/// One row in the sidebar for a child / sub-agent session.
+#[derive(Debug, Clone)]
+pub struct SubagentRow {
+    pub id: String,
+    pub task: String,
+    pub phase: String,
+    pub detail: String,
+    pub running: bool,
+}
+
 pub struct TuiSessionState {
     pub blocks: Vec<DisplayBlock>,
     /// In-progress assistant text (shown below committed blocks until finalized).
@@ -48,6 +58,10 @@ pub struct TuiSessionState {
     /// When true, transcript stays pinned to the bottom as new output arrives.
     pub transcript_follow_tail: bool,
     pub session_id: String,
+    /// Workspace root (from `SessionStarted`), for sidebar context.
+    pub workspace_display: String,
+    /// Live view of spawned sub-agents (updated from child activity events).
+    pub subagents: Vec<SubagentRow>,
     pub model: String,
     pub agent_profile: String,
     pub permission_mode: String,
@@ -84,6 +98,8 @@ impl TuiSessionState {
             scroll_lines: 0,
             transcript_follow_tail: true,
             session_id,
+            workspace_display: String::new(),
+            subagents: Vec::new(),
             model,
             agent_profile,
             permission_mode,
@@ -128,10 +144,13 @@ impl TuiSessionState {
     pub fn apply_event(&mut self, e: &AgentEvent) {
         match e {
             AgentEvent::SessionStarted {
-                session_id, model, ..
+                session_id,
+                model,
+                workspace,
             } => {
                 self.session_id = session_id.clone();
                 self.model = model.clone();
+                self.workspace_display = workspace.display().to_string();
             }
             AgentEvent::MessageReceived { role, content } => {
                 if role == "user" {
@@ -156,7 +175,7 @@ impl TuiSessionState {
                 self.blocks.push(DisplayBlock::ToolRunning {
                     name: tool.clone(),
                     call_id: call_id.clone(),
-                    input: format_tool_input(input),
+                    input: format_tool_input_for_display(tool, input),
                 });
             }
             AgentEvent::ToolCallCompleted { call_id, output } => {
@@ -278,14 +297,55 @@ impl TuiSessionState {
                 task,
                 ..
             } => {
-                let short = if child_session_id.len() > 8 {
-                    &child_session_id[..8]
+                let short = short_session_prefix(child_session_id);
+                let task_s = truncate(task, 200);
+                if let Some(row) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|r| r.id == *child_session_id)
+                {
+                    row.task = task_s.clone();
+                    row.running = true;
                 } else {
-                    child_session_id.as_str()
-                };
+                    self.subagents.push(SubagentRow {
+                        id: child_session_id.clone(),
+                        task: task_s.clone(),
+                        phase: String::new(),
+                        detail: String::new(),
+                        running: true,
+                    });
+                }
                 self.blocks.push(DisplayBlock::System(format!(
-                    "Sub-agent {short}: {}",
+                    "Sub-agent {short}… — {}",
                     truncate(task, 80)
+                )));
+            }
+            AgentEvent::ChildSessionActivity {
+                child_session_id,
+                phase,
+                detail,
+            } => {
+                let short = short_session_prefix(child_session_id);
+                let d = truncate(detail, 120);
+                if let Some(row) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|r| r.id == *child_session_id)
+                {
+                    row.phase = phase.clone();
+                    row.detail = d.clone();
+                    row.running = true;
+                } else {
+                    self.subagents.push(SubagentRow {
+                        id: child_session_id.clone(),
+                        task: "(sub-agent)".into(),
+                        phase: phase.clone(),
+                        detail: d.clone(),
+                        running: true,
+                    });
+                }
+                self.blocks.push(DisplayBlock::System(format!(
+                    "↳ {short}… · {phase} · {d}"
                 )));
             }
             AgentEvent::ChildSessionCompleted {
@@ -293,17 +353,30 @@ impl TuiSessionState {
                 status,
                 ..
             } => {
-                let short = if child_session_id.len() > 8 {
-                    &child_session_id[..8]
-                } else {
-                    child_session_id.as_str()
-                };
+                let short = short_session_prefix(child_session_id);
+                if let Some(row) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|r| r.id == *child_session_id)
+                {
+                    row.running = false;
+                    row.phase = "done".into();
+                    row.detail = status.clone();
+                }
                 self.blocks.push(DisplayBlock::System(format!(
-                    "Sub-agent {short} done: {status}"
+                    "Sub-agent {short}… done: {status}"
                 )));
             }
             _ => {}
         }
+    }
+}
+
+fn short_session_prefix(id: &str) -> &str {
+    if id.len() > 8 {
+        &id[..8]
+    } else {
+        id
     }
 }
 
@@ -319,6 +392,34 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn format_tool_input_for_display(tool: &str, value: &Value) -> String {
+    if tool == "spawn_subagent" {
+        format_spawn_subagent_input(value)
+    } else {
+        format_tool_input(value)
+    }
+}
+
+fn format_spawn_subagent_input(v: &Value) -> String {
+    let task = v
+        .get("task")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim();
+    let wt = v.get("use_worktree").and_then(|b| b.as_bool()).unwrap_or(true);
+    let n_focus = v
+        .get("focus_files")
+        .and_then(|a| a.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    format!(
+        "task:\n{}\nworktree: {} · focus_files: {}",
+        truncate(task, 500),
+        wt,
+        n_focus
+    )
+}
+
 fn format_tool_input(value: &Value) -> String {
     if let Some(raw) = value.as_str() {
         if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
@@ -331,7 +432,9 @@ fn format_tool_input(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nca_common::event::{InteractiveQuestionPayload, QuestionOption, QuestionSelection};
+    use nca_common::event::{
+        AgentEvent, InteractiveQuestionPayload, QuestionOption, QuestionSelection,
+    };
 
     #[test]
     fn question_requested_sets_active_question() {
@@ -366,6 +469,31 @@ mod tests {
             selection: QuestionSelection::Suggested,
         });
         assert!(st.active_question.is_none());
+    }
+
+    #[test]
+    fn child_session_activity_updates_subagent_row() {
+        let mut st = TuiSessionState::new(
+            "session-x".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+        );
+        st.apply_event(&AgentEvent::ChildSessionSpawned {
+            parent_session_id: "session-x".into(),
+            child_session_id: "child-abc".into(),
+            task: "do the thing".into(),
+            workspace: std::path::PathBuf::from("/tmp"),
+            branch: None,
+        });
+        assert_eq!(st.subagents.len(), 1);
+        st.apply_event(&AgentEvent::ChildSessionActivity {
+            child_session_id: "child-abc".into(),
+            phase: "read_file".into(),
+            detail: "src/lib.rs".into(),
+        });
+        assert_eq!(st.subagents[0].phase, "read_file");
+        assert_eq!(st.subagents[0].detail, "src/lib.rs");
     }
 
     #[test]

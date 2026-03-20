@@ -1,7 +1,10 @@
 use crate::prompt::NcaPrompt;
 use crate::runner::{SessionRuntime, dispatch_question_answer, dispatch_tool_approval};
 use crate::slash_commands::SLASH_COMMANDS;
-use crate::tui::{DisplayBlock, TuiCmd, TuiSessionState, run_blocking, spawn_tui_bridge};
+use crate::tui::{
+    DisplayBlock, TuiCmd, TuiSessionState, replay_event_log_into_state, run_blocking,
+    spawn_tui_bridge,
+};
 use nca_common::config::PermissionMode;
 use nca_common::event::{EndReason, QuestionSelection};
 use nca_core::skills::SkillCatalog;
@@ -1009,11 +1012,13 @@ impl Repl {
             perm,
         )));
 
+        let log_path = self.runtime.event_log_path();
+        replay_event_log_into_state(&log_path, &tui_state).await;
+
         let rx = self
             .runtime
             .take_event_rx()
             .ok_or_else(|| anyhow::anyhow!("internal: event channel already taken"))?;
-        let log_path = self.runtime.event_log_path();
         let ipc = self.runtime.take_ipc_handle();
         let approval = self.runtime.take_ipc_approval_pending();
         let question = self.runtime.question_pending();

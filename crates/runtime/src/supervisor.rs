@@ -522,6 +522,71 @@ impl Supervisor {
     }
 }
 
+fn truncate_child_detail(s: &str, max_chars: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max_chars {
+        t.to_string()
+    } else {
+        format!(
+            "{}…",
+            t.chars()
+                .take(max_chars.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
+}
+
+fn tool_input_one_line(input: &serde_json::Value) -> String {
+    if let Some(s) = input.as_str() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+            return tool_input_one_line(&v);
+        }
+        return truncate_child_detail(s, 120);
+    }
+    if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+        return truncate_child_detail(cmd, 120);
+    }
+    if let Some(p) = input
+        .get("path")
+        .or_else(|| input.get("file_path"))
+        .and_then(|v| v.as_str())
+    {
+        return truncate_child_detail(p, 120);
+    }
+    let s = serde_json::to_string(input).unwrap_or_default();
+    truncate_child_detail(&s, 120)
+}
+
+/// Maps a child session event to a parent-visible activity line (sidebar + transcript).
+fn map_child_event_for_parent_broadcast(
+    child_session_id: &str,
+    event: &AgentEvent,
+) -> Option<AgentEvent> {
+    match event {
+        AgentEvent::ToolCallStarted { tool, input, .. } => Some(AgentEvent::ChildSessionActivity {
+            child_session_id: child_session_id.to_string(),
+            phase: tool.clone(),
+            detail: tool_input_one_line(input),
+        }),
+        AgentEvent::Checkpoint { phase, detail, .. } => Some(AgentEvent::ChildSessionActivity {
+            child_session_id: child_session_id.to_string(),
+            phase: phase.clone(),
+            detail: truncate_child_detail(detail, 120),
+        }),
+        AgentEvent::ChildSessionSpawned { task, .. } => Some(AgentEvent::ChildSessionActivity {
+            child_session_id: child_session_id.to_string(),
+            phase: "nested_subagent".to_string(),
+            detail: truncate_child_detail(task, 120),
+        }),
+        AgentEvent::Error { message } => Some(AgentEvent::ChildSessionActivity {
+            child_session_id: child_session_id.to_string(),
+            phase: "error".to_string(),
+            detail: truncate_child_detail(message, 160),
+        }),
+        _ => None,
+    }
+}
+
 /// Spawns the event fanout task: writes events to disk as `EventEnvelope`,
 /// broadcasts over IPC, and renders to the provided callback.
 pub fn spawn_event_fanout(
@@ -529,6 +594,7 @@ pub fn spawn_event_fanout(
     log_path: PathBuf,
     ipc_handle: Option<IpcHandle>,
     on_event: Option<Box<dyn Fn(&EventEnvelope) + Send>>,
+    parent_forward: Option<(String, mpsc::Sender<AgentEvent>)>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let (event_tx, _command_rx) = match ipc_handle {
@@ -549,6 +615,11 @@ pub fn spawn_event_fanout(
         let mut event_id: u64 = 0;
         while let Some(event) = event_rx.recv().await {
             event_id += 1;
+            if let Some((ref child_id, ref ptx)) = parent_forward {
+                if let Some(fwd) = map_child_event_for_parent_broadcast(child_id, &event) {
+                    let _ = ptx.send(fwd).await;
+                }
+            }
             let envelope = EventEnvelope::new(event_id, event);
             if let Some(ref tx) = event_tx {
                 let line = serde_json::to_string(&envelope).unwrap_or_default();
@@ -1072,8 +1143,9 @@ pub async fn spawn_child_session(
     let event_rx = handle.take_event_rx();
     let log_path = handle.event_log_path.clone();
 
+    let parent_forward = event_tx.map(|tx| (child_id.clone(), tx));
     let fanout = if let Some(rx) = event_rx {
-        Some(spawn_event_fanout(rx, log_path, None, None))
+        Some(spawn_event_fanout(rx, log_path, None, None, parent_forward))
     } else {
         None
     };
@@ -1121,10 +1193,12 @@ fn is_pid_alive(pid: u32) -> bool {
 }
 
 /// Get the last session ID from `.nca/.last_session`, if it exists and is valid.
+/// Falls back to finding the most recently updated session in the sessions directory.
 pub async fn get_last_session_id(
     config: &NcaConfig,
     workspace_root: &Path,
 ) -> anyhow::Result<Option<String>> {
+    // First, try the explicit last-session pointer
     let store = LastSessionStore::new(
         workspace_root.join(&config.session.last_session_file),
     );
@@ -1134,26 +1208,154 @@ pub async fn get_last_session_id(
             let session_store =
                 SessionStore::new(workspace_root.join(&config.session.history_dir));
             match session_store.load(&id).await {
-                Ok(_) => Ok(Some(id)),
+                Ok(_) => return Ok(Some(id)),
                 Err(_) => {
                     // Session file missing or corrupted; clear the stale pointer.
                     let _ = store.clear().await;
-                    Ok(None)
                 }
             }
         }
-        Ok(None) => Ok(None),
+        Ok(None) => {
+            // No pointer file - fall through to scan sessions dir
+        }
         Err(e) => {
             tracing::warn!("failed to load last session pointer: {}", e);
-            Ok(None)
+            // Fall through to scan sessions dir
         }
+    }
+
+    // Fallback: find the most recently updated session in the sessions directory
+    let session_store = SessionStore::new(workspace_root.join(&config.session.history_dir));
+    let ids = match session_store.list().await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::debug!("failed to list sessions: {}", e);
+            return Ok(None);
+        }
+    };
+
+    let mut latest: Option<(String, chrono::DateTime<chrono::Utc>)> = None;
+    for id in ids {
+        match session_store.load(&id).await {
+            Ok(session) => {
+                let should_replace = latest
+                    .as_ref()
+                    .map(|(_, updated_at)| session.meta.updated_at > *updated_at)
+                    .unwrap_or(true);
+                if should_replace {
+                    latest = Some((session.meta.id, session.meta.updated_at));
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+
+    if let Some((id, _)) = latest {
+        // Update the last-session pointer for future runs
+        let _ = store.save(&id).await;
+        Ok(Some(id))
+    } else {
+        Ok(None)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
     use nca_common::event::AgentCommand;
+    use nca_common::message::Message;
+    use nca_common::session::{SessionMeta, SessionState, SessionStatus};
+    use std::fs;
+
+    fn write_session_for_test(
+        workspace: &std::path::Path,
+        id: &str,
+        updated_at: chrono::DateTime<Utc>,
+        model: &str,
+        status: SessionStatus,
+    ) {
+        let sessions_dir = workspace.join(".nca").join("sessions");
+        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+
+        let session = SessionState {
+            meta: SessionMeta {
+                id: id.to_string(),
+                created_at: updated_at - Duration::minutes(1),
+                updated_at,
+                workspace: workspace.to_path_buf(),
+                model: model.to_string(),
+                status,
+                pid: None,
+                socket_path: None,
+                worktree_path: None,
+                branch: None,
+                base_branch: None,
+                parent_session_id: None,
+                child_session_ids: Vec::new(),
+                inherited_summary: None,
+                spawn_reason: None,
+                session_summary: None,
+                orchestration: None,
+            },
+            messages: vec![Message::user("hello")],
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            estimated_cost_usd: 0.0,
+        };
+
+        let json = serde_json::to_string_pretty(&session).expect("serialize session");
+        fs::write(sessions_dir.join(format!("{id}.json")), json).expect("write session");
+    }
+
+    #[tokio::test]
+    async fn get_last_session_id_falls_back_to_most_recent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path();
+        let now = Utc::now();
+
+        // Write sessions WITHOUT .last_session file
+        write_session_for_test(
+            workspace,
+            "session-oldest",
+            now - Duration::minutes(10),
+            "MiniMax-M2.5",
+            SessionStatus::Completed,
+        );
+        write_session_for_test(
+            workspace,
+            "session-middle",
+            now - Duration::minutes(5),
+            "MiniMax-M2.5",
+            SessionStatus::Completed,
+        );
+        write_session_for_test(
+            workspace,
+            "session-newest",
+            now,
+            "MiniMax-M2.5",
+            SessionStatus::Running,
+        );
+
+        let config = nca_common::config::NcaConfig::default();
+        let session_id =
+            get_last_session_id(&config, workspace)
+                .await
+                .expect("get_last_session_id should succeed")
+                .expect("should find a session");
+
+        // Should find the most recent session
+        assert_eq!(session_id, "session-newest");
+
+        // The .last_session file should now be updated
+        let last_session_path = workspace.join(".nca").join(".last_session");
+        assert!(
+            last_session_path.exists(),
+            ".last_session should be created"
+        );
+        let content = std::fs::read_to_string(&last_session_path).unwrap();
+        assert_eq!(content.trim(), "session-newest");
+    }
 
     #[tokio::test]
     async fn send_message_forwards_prompt_to_session_queue() {

@@ -2002,6 +2002,7 @@ dependencies = [
  "crossterm 0.29.0",
  "futures",
  "insta",
+ "nca-autoresearch",
  "nca-common",
  "nca-core",
  "nca-runtime",

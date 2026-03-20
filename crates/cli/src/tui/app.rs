@@ -139,6 +139,20 @@ fn layout_chunks(area: Rect, slash_h: u16) -> (Rect, Rect, Option<Rect>, Rect) {
     }
 }
 
+fn sidebar_fit(s: &str, max_chars: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max_chars {
+        t.to_string()
+    } else {
+        format!(
+            "{}…",
+            t.chars()
+                .take(max_chars.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
+}
+
 fn layout_with_sidebar(area: Rect) -> (Rect, Option<Rect>) {
     if area.width < SIDEBAR_MIN_TOTAL_WIDTH {
         return (area, None);
@@ -774,13 +788,24 @@ pub fn run_blocking(
                     let sections = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Length(9),
+                            Constraint::Length(12),
                             Constraint::Length(8),
-                            Constraint::Min(7),
+                            Constraint::Min(10),
                         ])
                         .split(sidebar);
 
+                    let ws_line = if g.workspace_display.is_empty() {
+                        "—".to_string()
+                    } else {
+                        sidebar_fit(&g.workspace_display, 26)
+                    };
                     let session_lines = vec![
+                        Line::from(Span::styled(
+                            "workspace",
+                            Style::default().fg(theme::MUTED),
+                        )),
+                        Line::from(ws_line),
+                        Line::default(),
                         Line::from(format!("session {}", &g.session_id[..8.min(g.session_id.len())])),
                         Line::from(format!("model   {}", g.model)),
                         Line::from(format!("agent   {}", g.agent_profile)),
@@ -834,27 +859,67 @@ pub fn run_blocking(
                         .wrap(Wrap { trim: false });
                     frame.render_widget(usage_block, sections[1]);
 
-                    let todo_lines = vec![
-                        Line::from(Span::styled(
-                            "task/todo area reserved",
-                            Style::default().fg(theme::TEXT),
-                        )),
-                        Line::default(),
-                        Line::from(Span::styled(
-                            "future sidebar ideas:",
-                            Style::default()
-                                .fg(theme::MUTED)
-                                .add_modifier(Modifier::BOLD),
-                        )),
-                        Line::from("current task summary"),
-                        Line::from("checklist items"),
-                        Line::from("blockers and notes"),
-                        Line::default(),
-                        Line::from(Span::styled(
-                            "Ctrl+P opens commands",
-                            Style::default().fg(theme::USER),
-                        )),
-                    ];
+                    let mut todo_lines: Vec<Line> = vec![Line::from(Span::styled(
+                        "sub-agents",
+                        Style::default()
+                            .fg(theme::MUTED)
+                            .add_modifier(Modifier::BOLD),
+                    ))];
+                    if g.subagents.is_empty() {
+                        todo_lines.push(Line::from(Span::styled(
+                            "none (spawn shows here)",
+                            Style::default().fg(theme::MUTED),
+                        )));
+                    } else {
+                        for row in g.subagents.iter().take(8) {
+                            let dot = if row.running { "●" } else { "○" };
+                            let id8 = sidebar_fit(&row.id, 8);
+                            let ph = sidebar_fit(&row.phase, 11);
+                            todo_lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("{dot} "),
+                                    Style::default().fg(if row.running {
+                                        theme::WARN
+                                    } else {
+                                        theme::MUTED
+                                    }),
+                                ),
+                                Span::styled(format!("{id8} "), Style::default().fg(theme::TEXT)),
+                                Span::styled(ph, Style::default().fg(theme::TOOL)),
+                            ]));
+                            if !row.detail.is_empty() {
+                                todo_lines.push(Line::from(Span::styled(
+                                    format!("  {}", sidebar_fit(&row.detail, 26)),
+                                    Style::default().fg(theme::MUTED),
+                                )));
+                            }
+                            if !row.task.is_empty() && row.task != "(sub-agent)" {
+                                todo_lines.push(Line::from(Span::styled(
+                                    format!("  {}", sidebar_fit(&row.task, 26)),
+                                    Style::default().fg(theme::TEXT),
+                                )));
+                            }
+                        }
+                    }
+                    todo_lines.push(Line::default());
+                    todo_lines.push(Line::from(Span::styled(
+                        "dev",
+                        Style::default()
+                            .fg(theme::MUTED)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    todo_lines.push(Line::from(Span::styled(
+                        ".nca/sessions",
+                        Style::default().fg(theme::USER),
+                    )));
+                    todo_lines.push(Line::from(Span::styled(
+                        "docs/research/",
+                        Style::default().fg(theme::USER),
+                    )));
+                    todo_lines.push(Line::from(Span::styled(
+                        "Ctrl+P commands",
+                        Style::default().fg(theme::MUTED),
+                    )));
                     let todo_block = Paragraph::new(Text::from(todo_lines))
                         .block(
                             Block::default()

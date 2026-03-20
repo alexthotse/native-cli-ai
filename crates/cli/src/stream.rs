@@ -445,6 +445,63 @@ fn render_event(event: &AgentEvent, stats: &StreamStats) {
                 message.color(theme::ERROR)
             );
         }
+        AgentEvent::ChildSessionSpawned {
+            child_session_id,
+            task,
+            ..
+        } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            let short = if child_session_id.len() > 8 {
+                &child_session_id[..8]
+            } else {
+                child_session_id.as_str()
+            };
+            println!(
+                "  {} sub-agent {}… — {}",
+                "⚡".color(theme::TOOL_BG).bold(),
+                short,
+                task.chars().take(100).collect::<String>()
+            );
+        }
+        AgentEvent::ChildSessionActivity {
+            child_session_id,
+            phase,
+            detail,
+        } => {
+            print!("{}", theme::CLEAR_LINE);
+            let short = if child_session_id.len() > 8 {
+                &child_session_id[..8]
+            } else {
+                child_session_id.as_str()
+            };
+            println!(
+                "  {} {}… · {} · {}",
+                "↳".color(theme::TOOL_BG),
+                short,
+                phase.color(theme::TEXT_DIM),
+                detail.color(theme::TEXT_DIM)
+            );
+        }
+        AgentEvent::ChildSessionCompleted {
+            child_session_id,
+            status,
+            ..
+        } => {
+            print!("{}", theme::CLEAR_LINE);
+            println!();
+            let short = if child_session_id.len() > 8 {
+                &child_session_id[..8]
+            } else {
+                child_session_id.as_str()
+            };
+            println!(
+                "  {} sub-agent {}… {}",
+                "✓".color(theme::SUCCESS),
+                short,
+                status.color(theme::TEXT_DIM)
+            );
+        }
         AgentEvent::MessageReceived { role, content } => {
             println!();
             let header = match role.as_str() {
