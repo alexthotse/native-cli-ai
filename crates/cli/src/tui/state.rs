@@ -81,6 +81,18 @@ pub struct TuiSessionState {
     pub active_approval: Option<ApprovalRequest>,
     /// When set, the composer answers this question (see status hint).
     pub active_question: Option<InteractiveQuestionPayload>,
+    /// Current git branch name (updated on branch switch).
+    pub current_branch: String,
+    /// Branch picker popup state.
+    pub branch_picker_open: bool,
+    /// Filter text in the branch picker.
+    pub branch_picker_query: String,
+    /// Selected index in the branch picker list.
+    pub branch_picker_index: usize,
+    /// List of branches for the picker (refreshed on open).
+    pub branch_picker_branches: Vec<String>,
+    /// Bounding rect of the branch chip in the status bar (for click hit-testing).
+    pub branch_chip_bounds: Option<ratatui::layout::Rect>,
 }
 
 impl TuiSessionState {
@@ -114,6 +126,12 @@ impl TuiSessionState {
             command_palette_query: String::new(),
             active_approval: None,
             active_question: None,
+            current_branch: String::new(),
+            branch_picker_open: false,
+            branch_picker_query: String::new(),
+            branch_picker_index: 0,
+            branch_picker_branches: Vec::new(),
+            branch_chip_bounds: None,
         }
     }
 
@@ -145,6 +163,28 @@ impl TuiSessionState {
 
     pub fn set_agent_profile(&mut self, label: &str) {
         self.agent_profile = label.to_string();
+    }
+
+    pub fn set_current_branch(&mut self, branch: &str) {
+        self.current_branch = branch.to_string();
+    }
+
+    pub fn open_branch_picker(&mut self, branches: Vec<String>, current: &str) {
+        self.branch_picker_branches = branches;
+        self.branch_picker_query.clear();
+        self.branch_picker_index = self
+            .branch_picker_branches
+            .iter()
+            .position(|b| b == current)
+            .unwrap_or(0);
+        self.branch_picker_open = true;
+    }
+
+    pub fn close_branch_picker(&mut self) {
+        self.branch_picker_open = false;
+        self.branch_picker_query.clear();
+        self.branch_picker_branches.clear();
+        self.branch_picker_index = 0;
     }
 
     pub fn set_permission_mode(&mut self, mode: &str) {

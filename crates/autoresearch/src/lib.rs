@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_metric_improvement() {
-        use program::{EditableFile, FixedFile, MetricCommand, MetricGoal};
+        use program::{MetricCommand, MetricGoal};
 
         let program = ResearchProgram {
             name: "test".to_string(),

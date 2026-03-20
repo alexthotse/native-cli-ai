@@ -1,5 +1,7 @@
 //! Full-screen session TUI: transcript, streaming assistant, composer.
 
+use std::path::Path;
+
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::state::{ApprovalRequest, DisplayBlock, TuiSessionState};
 use crossterm::{
@@ -39,6 +41,12 @@ pub enum TuiCmd {
     CycleAgent,
     CancelTurn,
     Exit,
+    /// Open the branch picker popup.
+    OpenBranchPicker,
+    /// Switch to the branch at the given index in the picker list.
+    SwitchBranch(usize),
+    /// Create a new branch with the given name and switch to it.
+    CreateBranch(String),
 }
 
 mod theme {
@@ -189,6 +197,47 @@ fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
         && col < r.x.saturating_add(r.width)
         && row >= r.y
         && row < r.y.saturating_add(r.height)
+}
+
+/// Run a git command synchronously and return stdout.
+fn git_run(args: &[&str], cwd: Option<&Path>) -> Option<String> {
+    let cwd = cwd?;
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Get the current git branch name for `workspace`.
+pub fn git_current_branch(workspace: &Path) -> Option<String> {
+    git_run(&["rev-parse", "--abbrev-ref", "HEAD"], Some(workspace))
+}
+
+/// List local git branches for `workspace`. Current branch is marked with `*`.
+pub fn git_list_branches(workspace: &Path) -> Vec<String> {
+    git_run(&["branch", "--no-color"], Some(workspace))
+        .map(|out| {
+            out.lines()
+                .map(|l| l.trim_start_matches("* ").trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Create a new branch `name` and check it out in `workspace`.
+pub fn git_create_branch(workspace: &Path, name: &str) -> bool {
+    git_run(&["checkout", "-b", name], Some(workspace)).is_some()
+}
+
+/// Switch to an existing branch `name` in `workspace`.
+pub fn git_switch_branch(workspace: &Path, name: &str) -> bool {
+    git_run(&["checkout", name], Some(workspace)).is_some()
 }
 
 pub fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -998,6 +1047,31 @@ pub fn run_blocking(
                     format!("{:02}:{:02}", elapsed / 60, elapsed % 60),
                     Style::default().fg(theme::MUTED),
                 );
+
+                // Compute the character-cell x-offset before any borrow of `g` escapes into `status_spans`.
+                let branch_char_offset = 4 + g.model.len() + 4 + g.agent_profile.len() + 4;
+                let branch_text = if g.current_branch.is_empty() {
+                    String::new()
+                } else {
+                    format!("⎇ {}", g.current_branch)
+                };
+                let branch_span_style = Style::default()
+                    .fg(theme::TOOL)
+                    .add_modifier(Modifier::UNDERLINED);
+
+                // Store the branch chip bounds for click hit-testing.
+                if st_r.width > branch_char_offset as u16 && !branch_text.is_empty() {
+                    let chip_len = branch_text.len() as u16;
+                    g.branch_chip_bounds = Some(Rect::new(
+                        st_r.x + branch_char_offset as u16,
+                        st_r.y,
+                        chip_len.min(st_r.width - branch_char_offset as u16),
+                        1,
+                    ));
+                } else {
+                    g.branch_chip_bounds = None;
+                }
+
                 let mut status_spans = vec![
                     busy,
                     approval_hint,
@@ -1006,6 +1080,9 @@ pub fn run_blocking(
                     Span::styled(&g.model, Style::default().fg(theme::USER)),
                     Span::raw(" │ "),
                     Span::styled(&g.agent_profile, Style::default().fg(theme::ASSISTANT)),
+                    Span::raw(" │ "),
+                    // branch_text borrow ends before next mutable use of `g` below
+                    Span::styled(branch_text, branch_span_style),
                     Span::raw(" │ "),
                     perm_span,
                 ];
@@ -1211,6 +1288,81 @@ pub fn run_blocking(
                         .wrap(Wrap { trim: false });
                     frame.render_widget(popup, popup_area);
                 }
+
+                // Branch picker popup.
+                if g.branch_picker_open {
+                    let branches = &g.branch_picker_branches;
+                    let filtered: Vec<&String> = if g.branch_picker_query.is_empty() {
+                        branches.iter().collect()
+                    } else {
+                        branches
+                            .iter()
+                            .filter(|b| b.contains(&g.branch_picker_query))
+                            .collect()
+                    };
+
+                    let popup_h = (filtered.len().min(12) as u16).saturating_add(6).max(8);
+                    let popup_area = centered_rect(area, 36, popup_h);
+
+                    let mut popup_lines = vec![
+                        Line::from(vec![
+                            Span::styled(" Branch ", Style::default().fg(theme::MUTED).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                if g.branch_picker_query.is_empty() {
+                                    "".to_string()
+                                } else {
+                                    format!(": {}", g.branch_picker_query)
+                                },
+                                Style::default().fg(theme::TEXT),
+                            ),
+                        ]),
+                        Line::default(),
+                    ];
+
+                    if filtered.is_empty() {
+                        popup_lines.push(Line::from(Span::styled(
+                            "  (no branches — type a name to create)",
+                            Style::default().fg(theme::MUTED),
+                        )));
+                    } else {
+                        let n_show = filtered.len().min(12);
+                        let list_scroll = g
+                            .branch_picker_index
+                            .saturating_sub(n_show.saturating_sub(1))
+                            .min(filtered.len().saturating_sub(n_show));
+                        for (i, branch) in filtered[list_scroll..list_scroll + n_show].iter().enumerate() {
+                            let global = list_scroll + i;
+                            let style = if global == g.branch_picker_index {
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(theme::USER)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme::TEXT)
+                            };
+                            let mark = if branch.as_str() == g.current_branch { " *" } else { "" };
+                            popup_lines.push(Line::from(Span::styled(format!(" {branch}{mark}"), style)));
+                        }
+                    }
+
+                    popup_lines.push(Line::default());
+                    popup_lines.push(Line::from(Span::styled(
+                        " Enter switch  /name new  Esc close",
+                        Style::default().fg(theme::MUTED),
+                    )));
+
+                    frame.render_widget(ClearWidget, popup_area);
+                    let popup = Paragraph::new(Text::from(popup_lines))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(theme::BORDER))
+                                .title(Span::styled(" git branch ", Style::default().fg(theme::MUTED))),
+                        )
+                        .style(Style::default().bg(theme::SURFACE))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(popup, popup_area);
+                }
             })?;
         }
 
@@ -1299,6 +1451,15 @@ pub fn run_blocking(
                             }
                         }
                     }
+
+                    // Check click on branch chip in status bar.
+                    if let Some(bounds) = g.branch_chip_bounds {
+                        if rect_contains(bounds, m.column, m.row)
+                            && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                        {
+                            let _ = cmd_tx.send(TuiCmd::OpenBranchPicker);
+                        }
+                    }
                 }
                 Event::Key(key) => {
                     if g.command_palette_open {
@@ -1348,6 +1509,72 @@ pub fn run_blocking(
                                     g.slash_menu_index =
                                         g.slash_menu_index.min(filtered.len().saturating_sub(1));
                                 }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    // Branch picker keyboard handling.
+                    if g.branch_picker_open {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => {
+                                g.close_branch_picker();
+                            }
+                            (KeyCode::Up, _) => {
+                                if !g.branch_picker_branches.is_empty() {
+                                    g.branch_picker_index = g
+                                        .branch_picker_index
+                                        .saturating_sub(1);
+                                }
+                            }
+                            (KeyCode::Down, _) => {
+                                let n = g.branch_picker_branches.len();
+                                if n > 0 {
+                                    g.branch_picker_index = (g.branch_picker_index + 1) % n;
+                                }
+                            }
+                            (KeyCode::Enter, _) => {
+                                // Extract data before dropping the guard.
+                                let query_text = g.branch_picker_query.trim().to_string();
+                                let idx = g.branch_picker_index;
+                                let name = g.branch_picker_branches.get(idx).cloned();
+                                let cmd = if !query_text.is_empty() && !query_text.starts_with('/') {
+                                    // Create new branch with typed name.
+                                    Some(TuiCmd::CreateBranch(query_text))
+                                } else if let Some(ref n) = name {
+                                    if !n.is_empty() {
+                                        Some(TuiCmd::SwitchBranch(idx))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+                                g.close_branch_picker();
+                                if let Some(c) = cmd {
+                                    drop(g);
+                                    let _ = cmd_tx.send(c);
+                                }
+                            }
+                            (KeyCode::Backspace, _) => {
+                                g.branch_picker_query.pop();
+                                // Reset selection to first match
+                                let query = &g.branch_picker_query;
+                                g.branch_picker_index = g
+                                    .branch_picker_branches
+                                    .iter()
+                                    .position(|b| b.contains(query))
+                                    .unwrap_or(0);
+                            }
+                            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                                g.branch_picker_query.push(c);
+                                let query = &g.branch_picker_query;
+                                g.branch_picker_index = g
+                                    .branch_picker_branches
+                                    .iter()
+                                    .position(|b| b.contains(query))
+                                    .unwrap_or(0);
                             }
                             _ => {}
                         }

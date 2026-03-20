@@ -445,10 +445,8 @@ fn extract_file_path(line: &str) -> Option<PathBuf> {
             return Some(PathBuf::from(&line[start + 1..start + 1 + end]));
         }
     }
-    // Try to extract the first word-like token that looks like a file path
-    // (ends in common source-file extensions, or is a bare path segment).
+    // Try to extract the first word-like token that looks like a file path.
     // This handles cases like "train.py — model code" where em-dash isn't whitespace.
-    let known_exts = ["rs", "py", "js", "ts", "go", "cpp", "c", "h", "toml", "json", "md", "txt", "sh", "css", "html"];
     for token in line.split(|c: char| c.is_ascii_whitespace() || c == '—' || c == '–' || c == '-' || c == ':' || c == '(' || c == ')' || c == '[' || c == ']') {
         let t = token.trim();
         // Skip empty or punctuation-only
