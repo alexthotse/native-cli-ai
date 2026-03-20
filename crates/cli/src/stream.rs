@@ -78,6 +78,7 @@ struct StreamStats {
     input_tokens: Arc<AtomicU64>,
     output_tokens: Arc<AtomicU64>,
     estimated_cost: Arc<AtomicU64>,
+    #[allow(dead_code)]
     start_time: Instant,
 }
 
@@ -113,6 +114,7 @@ impl StreamStats {
         self.estimated_cost.load(Ordering::Relaxed) as f64 / 100.0
     }
 
+    #[allow(dead_code)]
     fn elapsed_secs(&self) -> u64 {
         self.start_time.elapsed().as_secs()
     }

@@ -71,6 +71,7 @@ impl ReplOutput<'_> {
 }
 
 /// Special input prefixes
+#[allow(dead_code)]
 const INPUT_PREFIXES: &[&str] = &[
     "!",  // Bash mode - run shell command directly
     "@",  // File reference - fuzzy file search
@@ -107,6 +108,7 @@ impl AgentProfile {
     }
 
     /// Get system prompt modifier for this profile
+    #[allow(dead_code)]
     pub fn system_modifier(&self) -> &'static str {
         match self {
             AgentProfile::Build => "",
@@ -134,6 +136,7 @@ impl AgentProfile {
     }
 
     /// Get reedline suggestion color for this profile
+    #[allow(dead_code)]
     pub fn style(&self) -> &'static str {
         match self {
             AgentProfile::Build => "",
@@ -404,12 +407,13 @@ impl Repl {
     }
 
     /// Open external editor for long prompts (Ctrl+G style)
+    #[allow(dead_code)]
     async fn open_external_editor(&self) -> Option<String> {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
 
         // Create a temp file
         let temp_path = std::env::temp_dir().join("nca-prompt-XXXXXX");
-        let temp_path_str = temp_path.to_string_lossy().to_string();
+        let _temp_path_str = temp_path.to_string_lossy().to_string();
 
         // Use mktemp-like approach
         let temp_file = format!("{}.txt", std::process::id());
@@ -1285,7 +1289,7 @@ impl Completer for Repl {
             let bash_commands = [
                 "git", "ls", "cat", "find", "grep", "npm", "cargo", "make", "docker", "curl",
             ];
-            let prefix = line.trim_start_matches('!');
+            let _prefix = line.trim_start_matches('!');
             for cmd in bash_commands {
                 let full = format!("!{}", cmd);
                 if full.starts_with(line) {

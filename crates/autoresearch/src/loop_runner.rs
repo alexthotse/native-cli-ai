@@ -94,6 +94,7 @@ pub struct AutoResearchLoop {
     experiment_config: ExperimentConfig,
     git: GitManager,
     logger: ResultsLogger,
+    #[allow(dead_code)]
     session: Arc<RwLock<Option<AutoResearchSession>>>,
     state: Arc<RwLock<LoopState>>,
     should_stop: Arc<AtomicBool>,

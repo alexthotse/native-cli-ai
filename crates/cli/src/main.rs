@@ -1,4 +1,3 @@
-mod approval_prompt;
 mod approval_prompts;
 mod prompt;
 mod repl;

@@ -37,12 +37,14 @@ pub fn truncate(s: &str, max_len: usize) -> String {
 
 /// Interactive approval handler using cli-prompts library.
 /// Provides rich TUI prompts for tool approval.
+#[allow(dead_code)]
 pub struct InteractiveApprovalHandler {
     prompt_lock: AsyncMutex<()>,
     show_full_json: bool,
 }
 
 impl InteractiveApprovalHandler {
+    #[allow(dead_code)]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             prompt_lock: AsyncMutex::new(()),
@@ -50,11 +52,13 @@ impl InteractiveApprovalHandler {
         })
     }
 
+    #[allow(dead_code)]
     pub fn with_full_json(mut self, show: bool) -> Self {
         self.show_full_json = show;
         self
     }
 
+    #[allow(dead_code)]
     fn prompt_approval(&self, call: &ToolCall, description: &str) -> Option<bool> {
         let tool_name = &call.name;
         let input_preview = truncate(&format_json_pretty(&call.input), 150);
@@ -82,6 +86,7 @@ impl InteractiveApprovalHandler {
         }
     }
 
+    #[allow(dead_code)]
     fn show_tool_details(&self, call: &ToolCall) {
         println!("\n╭─────────────────────────────────────────────────────────────╮");
         println!(
@@ -200,11 +205,13 @@ pub mod legacy {
     use super::*;
     use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+    #[allow(dead_code)]
     pub struct StdioApprovalHandler {
         prompt_lock: AsyncMutex<()>,
     }
 
     impl StdioApprovalHandler {
+        #[allow(dead_code)]
         pub fn new() -> Arc<Self> {
             Arc::new(Self {
                 prompt_lock: AsyncMutex::new(()),

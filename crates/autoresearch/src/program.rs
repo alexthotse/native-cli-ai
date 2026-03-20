@@ -203,7 +203,9 @@ impl ResearchProgram {
                             } else if metric_line.contains("regex:") || metric_line.contains("parse:") {
                                 let regex = extract_value(lines[i], vec!["regex:", "parse:"]);
                                 if let Some(regex) = regex {
-                                    metric_command.parse_regex = regex.trim().to_string();
+                                    // Strip backticks from regex value
+                                    let regex = regex.trim().trim_matches('`');
+                                    metric_command.parse_regex = regex.to_string();
                                 }
                             } else if metric_line.contains("goal:") {
                                 if metric_line.contains("minimize") || metric_line.contains("lower") {
@@ -459,13 +461,13 @@ fn extract_value<'a>(line: &'a str, keys: Vec<&str>) -> Option<&'a str> {
     let line_lower = line.to_lowercase();
     for key in keys {
         if let Some(pos) = line_lower.find(key) {
-            let after = line[pos..].trim_start_matches(|c: char| !c.is_alphanumeric() && c != ':' && c != '_');
+            let _after = line[pos..].trim_start_matches(|c: char| !c.is_alphanumeric() && c != ':' && c != '_');
             // Find the actual value after the key
             let key_len = key.len();
             let remaining = &line[pos + key_len..];
             let value = remaining.trim_start_matches(|c: char| c == ':' || c == ' ' || c == '"' || c == '\'');
             if !value.is_empty() {
-                return Some(value.trim_end_matches(|c| c == '"' || c == '\'' || c == '`'));
+                return Some(value.trim_end_matches(|c| c == '"' || c == '\''));
             }
         }
     }
