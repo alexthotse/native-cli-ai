@@ -1,3 +1,5 @@
+use crate::context_manager::{ContextManager, ContextManagerConfig, ContextStats};
+use crate::model_limits::ModelLimits;
 use crate::ipc::{IpcHandle, IpcServer};
 use crate::last_session::LastSessionStore;
 use crate::memory_store::{MemoryNote, MemoryStore};
@@ -56,6 +58,8 @@ pub struct Supervisor {
     orchestration: Option<OrchestrationContext>,
     config: NcaConfig,
     hooks: Option<HookRunner>,
+    context_manager: ContextManager,
+    last_summary_at_tokens: usize,
 }
 
 /// Configuration for creating a new supervised session.
@@ -214,6 +218,28 @@ impl Supervisor {
             build_system_prompt(&config, &workspace_root, cfg.orchestration_context.as_ref());
         agent.set_system_prompt(system_prompt);
 
+        // Build context manager config with model-specific detection
+        let model_limits = ModelLimits::for_model(&config.model.default_model);
+        let context_window = if config.memory.context.auto_detect_context_window {
+            tracing::info!(
+                "Auto-detected context window for {}: {} tokens",
+                config.model.default_model,
+                model_limits.context_window
+            );
+            model_limits.context_window
+        } else {
+            config.memory.context.context_window_target
+        };
+        
+        let context_config = ContextManagerConfig {
+            context_window_target: context_window,
+            max_retained_messages: config.memory.context.max_retained_messages,
+            auto_summarize_threshold: config.memory.context.auto_summarize_threshold,
+            enable_auto_summarize: config.memory.context.enable_auto_summarize,
+            max_message_chars_for_summary: 10000,
+        };
+        let context_manager = ContextManager::new(context_config, config.model.default_model.clone());
+
         let sup = Self {
             session_id,
             workspace_root,
@@ -240,6 +266,8 @@ impl Supervisor {
             orchestration: cfg.orchestration_context,
             config,
             hooks: hook_runner,
+            context_manager,
+            last_summary_at_tokens: 0,
         };
         sup.save().await.map_err(|e| ProviderError::Other(e))?;
         sup.update_last_session()
@@ -322,13 +350,171 @@ impl Supervisor {
     }
 
     pub async fn run_turn(&mut self, prompt: &str) -> Result<String, ProviderError> {
+        // Check context before running turn
+        self.maybe_compact_context().await;
+
         let output = self.agent.run_turn(prompt).await?;
+        
+        // Check context after turn
+        self.check_and_summarize_context().await;
+        
         self.refresh_session_summary();
         self.save().await.map_err(|e| ProviderError::Other(e))?;
         self.update_last_session()
             .await
             .map_err(|e| ProviderError::Other(e))?;
         Ok(output)
+    }
+
+    /// Get current context statistics with model info.
+    pub fn context_stats(&self) -> ContextStats {
+        use crate::model_limits::ModelLimits;
+        
+        let model_limits = ModelLimits::for_model(&self.model);
+        let manager_stats = self.context_manager.stats(&self.agent.messages);
+        
+        ContextStats {
+            model: self.model.clone(),
+            context_window: model_limits.context_window,
+            estimated_tokens: manager_stats.estimated_tokens,
+            message_count: manager_stats.message_count,
+            usage_percent: manager_stats.usage_percent,
+            needs_attention: manager_stats.needs_attention,
+            should_summarize: manager_stats.should_summarize,
+        }
+    }
+
+    /// Check if context needs attention or summarization.
+    async fn maybe_compact_context(&mut self) {
+        if !self.context_manager.config().enable_auto_summarize {
+            return;
+        }
+
+        let stats = self.context_manager.stats(&self.agent.messages);
+        if stats.needs_attention {
+            if let Some(tx) = self.agent.event_sender() {
+                let _ = tx
+                    .send(AgentEvent::ContextWarning {
+                        message: format!(
+                            "Context window at {}% ({} tokens). Consider summarizing.",
+                            stats.usage_percent,
+                            stats.estimated_tokens
+                        ),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// Check if context should be summarized and trigger if needed.
+    async fn check_and_summarize_context(&mut self) {
+        if !self.context_manager.config().enable_auto_summarize {
+            return;
+        }
+
+        let stats = self.context_manager.stats(&self.agent.messages);
+        
+        // Don't summarize if we just summarized
+        if self.last_summary_at_tokens > 0 
+            && stats.estimated_tokens < self.last_summary_at_tokens {
+            // Context was reduced, reset the flag
+            self.last_summary_at_tokens = 0;
+        }
+
+        if stats.should_summarize && self.last_summary_at_tokens == 0 {
+            // Emit event that summarization is starting
+            if let Some(tx) = self.agent.event_sender() {
+                let _ = tx
+                    .send(AgentEvent::ContextCompaction {
+                        phase: "starting".to_string(),
+                        message: format!(
+                            "Auto-summarizing context ({}% full, {} tokens)",
+                            stats.usage_percent,
+                            stats.estimated_tokens
+                        ),
+                    })
+                    .await;
+            }
+
+            // Trigger summarization
+            if let Err(e) = self.perform_auto_summarize().await {
+                tracing::error!("Auto-summarize failed: {}", e);
+                // Reset so we can try again
+                self.last_summary_at_tokens = 0;
+            }
+        }
+    }
+
+    /// Perform the actual auto-summarization.
+    async fn perform_auto_summarize(&mut self) -> Result<(), String> {
+        let messages_to_summarize = self.context_manager.get_messages_to_summarize(&self.agent.messages);
+        
+        if messages_to_summarize.is_empty() {
+            // Nothing to summarize, use sliding window instead
+            let compacted = self.context_manager.get_sliding_window(&self.agent.messages, None);
+            self.agent.messages = compacted;
+            return Ok(());
+        }
+
+        // Generate summary prompt
+        let summary_prompt = self.context_manager.summary_prompt(&messages_to_summarize);
+        
+        // Try to use the AI to summarize. If the provider supports a quick call,
+        // we can use it. Otherwise, fall back to extractive summarization.
+        match self.summarize_with_ai(&summary_prompt).await {
+            Ok(summary) => {
+                // Apply the summary
+                self.agent.messages = self.context_manager.apply_summary(&self.agent.messages, &summary);
+                self.last_summary_at_tokens = self.context_manager.stats(&self.agent.messages).estimated_tokens;
+                
+                if let Some(tx) = self.agent.event_sender() {
+                    let _ = tx
+                        .send(AgentEvent::ContextCompaction {
+                            phase: "completed".to_string(),
+                            message: format!(
+                                "Context summarized. Reduced from {} to ~{} tokens.",
+                                messages_to_summarize.len() * 100, // rough estimate
+                                self.last_summary_at_tokens
+                            ),
+                        })
+                        .await;
+                }
+            }
+            Err(e) => {
+                // Fallback: just use sliding window
+                tracing::warn!("AI summarization failed, using sliding window: {}", e);
+                let compacted = self.context_manager.get_sliding_window(&self.agent.messages, None);
+                self.agent.messages = compacted;
+                self.last_summary_at_tokens = self.context_manager.stats(&self.agent.messages).estimated_tokens;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Use AI to generate a summary of the conversation.
+    async fn summarize_with_ai(&self, prompt: &str) -> Result<String, String> {
+        use nca_common::message::Message;
+        
+        let messages = vec![Message::user(prompt)];
+        
+        let mut stream = self.agent.provider.chat(&messages, &[], &self.model)
+            .await
+            .map_err(|e| e.to_string())?;
+        
+        // Collect the response
+        let mut summary = String::new();
+        while let Some(chunk) = stream.recv().await {
+            match chunk {
+                nca_core::provider::StreamChunk::TextDelta(delta) => {
+                    summary.push_str(&delta);
+                }
+                nca_core::provider::StreamChunk::Done => break,
+                _ => {}
+            }
+        }
+        
+        Ok(summary.trim().to_string())
     }
 
     pub async fn finish(&mut self, reason: EndReason) {

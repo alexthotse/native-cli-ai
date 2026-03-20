@@ -813,6 +813,51 @@ pub struct MemoryConfig {
     pub max_notes: usize,
     #[serde(default)]
     pub auto_compact_on_finish: bool,
+    /// Context management configuration.
+    #[serde(default)]
+    pub context: ContextConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextConfig {
+    /// Target context window size (approximate tokens).
+    /// Set to 0 for auto-detection based on model, or specify a custom value.
+    /// Auto-detection uses known model context windows.
+    #[serde(default)]
+    pub context_window_target: usize,
+    /// Use model-specific context window detection.
+    /// When true, ignores context_window_target and auto-detects from model name.
+    #[serde(default = "default_true")]
+    pub auto_detect_context_window: bool,
+    /// Maximum messages to retain after compaction.
+    #[serde(default = "default_max_retained_messages")]
+    pub max_retained_messages: usize,
+    /// Percentage of context window that triggers auto-summarize (0-100).
+    #[serde(default = "default_summarize_threshold")]
+    pub auto_summarize_threshold: u8,
+    /// Enable automatic context summarization.
+    #[serde(default = "default_true")]
+    pub enable_auto_summarize: bool,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            context_window_target: 0, // 0 means auto-detect
+            auto_detect_context_window: true,
+            max_retained_messages: default_max_retained_messages(),
+            auto_summarize_threshold: default_summarize_threshold(),
+            enable_auto_summarize: default_true(),
+        }
+    }
+}
+
+fn default_summarize_threshold() -> u8 {
+    75
+}
+
+fn default_max_retained_messages() -> usize {
+    50
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -934,6 +979,7 @@ impl Default for MemoryConfig {
             file_path: PathBuf::from(".nca/memory.json"),
             max_notes: default_max_memory_notes(),
             auto_compact_on_finish: false,
+            context: ContextConfig::default(),
         }
     }
 }
@@ -948,6 +994,29 @@ impl MemoryConfig {
         }
         if let Some(auto_compact_on_finish) = partial.auto_compact_on_finish {
             self.auto_compact_on_finish = auto_compact_on_finish;
+        }
+        if let Some(context) = partial.context {
+            self.context.merge(context);
+        }
+    }
+}
+
+impl ContextConfig {
+    fn merge(&mut self, partial: PartialContextConfig) {
+        if let Some(auto_detect) = partial.auto_detect_context_window {
+            self.auto_detect_context_window = auto_detect;
+        }
+        if let Some(context_window_target) = partial.context_window_target {
+            self.context_window_target = context_window_target;
+        }
+        if let Some(max_retained_messages) = partial.max_retained_messages {
+            self.max_retained_messages = max_retained_messages;
+        }
+        if let Some(auto_summarize_threshold) = partial.auto_summarize_threshold {
+            self.auto_summarize_threshold = auto_summarize_threshold;
+        }
+        if let Some(enable_auto_summarize) = partial.enable_auto_summarize {
+            self.enable_auto_summarize = enable_auto_summarize;
         }
     }
 }
@@ -1107,6 +1176,16 @@ struct PartialMemoryConfig {
     file_path: Option<PathBuf>,
     max_notes: Option<usize>,
     auto_compact_on_finish: Option<bool>,
+    context: Option<PartialContextConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct PartialContextConfig {
+    context_window_target: Option<usize>,
+    auto_detect_context_window: Option<bool>,
+    max_retained_messages: Option<usize>,
+    auto_summarize_threshold: Option<u8>,
+    enable_auto_summarize: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

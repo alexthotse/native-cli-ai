@@ -107,6 +107,15 @@ pub enum AgentEvent {
         question_id: String,
         selection: QuestionSelection,
     },
+    /// Warning that context is approaching limit.
+    ContextWarning {
+        message: String,
+    },
+    /// Context compaction/summarization event.
+    ContextCompaction {
+        phase: String,
+        message: String,
+    },
 }
 
 /// One selectable row shown for an interactive question.
