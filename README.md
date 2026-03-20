@@ -4,7 +4,9 @@
 
 `nca` is a Rust-native coding CLI that ships as a single binary. It is built for local-first, terminal-first workflows: interactive TUI, line REPL, one-shot runs, detached sessions, attach/status/logs, JSON and NDJSON output, Unix-socket IPC, and worktree-isolated subagents.
 
-The product surface is the CLI. There is no browser or desktop shell in the default path.
+It is meant for people who like their AI tooling close to the terminal: fast to start, easy to script, and capable of running real session workflows without dragging in a browser shell.
+
+The product surface is the CLI. No desktop wrapper, no Electron, no browser in the default path.
 
 ## What It Does
 
@@ -15,6 +17,23 @@ The product surface is the CLI. There is no browser or desktop shell in the defa
 - Spawns child agents with explicit parent/child lineage and optional git worktrees.
 - Uses MiniMax by default, with OpenAI, Anthropic, and OpenRouter support.
 - Loads built-in tools plus optional MCP tools from config.
+
+## Why People Reach For It
+
+- ⚡ You want a coding CLI that feels quick and stays out of the way.
+- 🧠 You want sessions, event logs, and resumable work instead of a throwaway prompt box.
+- 🌿 You want child agents that can branch off cleanly with lineage and optional git worktrees.
+- 🤖 You want a CLI that still works well when another system is driving it through JSON, NDJSON, and IPC.
+
+## Common Use Cases
+
+| Use case | Why `nca` fits |
+|---|---|
+| Solo coding in the terminal | Start with `nca`, use the TUI, switch agent profiles, review diffs, and keep everything in one terminal-native flow. |
+| Quick one-shot work | `nca run --prompt ...` gives you a focused foreground task without opening a longer session than you need. |
+| Background analysis | `nca spawn --prompt ...` lets you kick off work, keep coding, then come back with `status`, `logs`, or `attach`. |
+| Multi-agent exploration | Parent and child sessions keep lineage, and child runs can use separate git worktrees for isolation. |
+| Automation and orchestration | `--json`, `--stream ndjson`, Unix-socket IPC, and `NCA_ORCH_*` metadata make it usable as a worker process. |
 
 ## Quick Start
 
@@ -47,6 +66,12 @@ nca attach <session_id>
 ```
 
 The full-screen UI appears when `stdin` and `stdout` are TTYs and `--stream human` is active. Otherwise `nca` falls back to the line-oriented REPL or one-shot execution path.
+
+## A Quick Look 👀
+
+The main interface is designed to feel like a serious terminal tool, not a toy overlay.
+
+![nca interactive view](docs/images/nca-show.png)
 
 ## Core Commands
 
@@ -89,9 +114,15 @@ Useful interactive behaviors:
 - `Ctrl+C` or `/stop` cancels the current running turn.
 - `/auto-answer` accepts the suggested answer for a pending `ask_question`.
 
+Small touches in the TUI matter too: branch switching, structured options, session sidebars, and direct control over long-running turns.
+
+![branch picker](docs/images/git-branch.png)
+
+![interactive options](docs/images/option.png)
+
 ## Output and Automation
 
-`nca` is designed to work both as a human-facing CLI and as a worker process.
+`nca` is designed to work well in two very different moods: terminal-first for humans, and machine-friendly for orchestrators.
 
 - `--stream off` returns only the final output.
 - `--stream human` renders the normal terminal experience.
@@ -122,7 +153,7 @@ See [Orchestration Contract](docs/orchestration.md) for the subprocess-facing su
 
 ## Providers
 
-MiniMax is the default provider path. The codebase also supports OpenAI, Anthropic, and OpenRouter.
+MiniMax is the default provider path. The codebase also supports OpenAI, Anthropic, and OpenRouter, so the project can stay MiniMax-first without boxing itself into one provider forever.
 
 Typical environment variables:
 
@@ -146,7 +177,7 @@ The system prompt is layered in this order:
 5. Discovered skills summary
 6. Orchestration context
 
-The built-in tool surface includes filesystem editing, search, diffing, patching, shell execution, web access, `ask_question`, and `spawn_subagent`. MCP tools are loaded dynamically when configured, so the available tool set can expand beyond the built-ins.
+The built-in tool surface includes filesystem editing, search, diffing, patching, shell execution, web access, `ask_question`, and `spawn_subagent`. MCP tools are loaded dynamically when configured, so the available tool set can grow with your environment.
 
 ## Crate Layout
 
@@ -163,6 +194,8 @@ The built-in tool surface includes filesystem editing, search, diffing, patching
 - The runtime uses a `Supervisor` to own lifecycle, IPC, approvals, questions, event fanout, and persistence.
 - Child sessions can inherit parent context, record lineage in session metadata, and run inside separate git worktrees.
 - IPC uses newline-delimited JSON over Unix sockets so `attach`, approvals, status, and other controls share one runtime transport.
+
+In practice, that means you can start small, branch out when a task gets bigger, and still keep a clean trail of what happened.
 
 ## Documentation
 
