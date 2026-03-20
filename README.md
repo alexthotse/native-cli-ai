@@ -1,72 +1,43 @@
-# nca - Native CLI AI
+# nca
 
 ![nca hero](docs/images/nca-readme-hero.png)
 
-`nca` is a Rust-native coding CLI for people who want something fast, local, and easy to run at scale. It starts quickly, stays light on memory, and is built for workflows where you may want to run **many agents and sub-agents in parallel** instead of babysitting one heavy session at a time.
+`nca` is a Rust-native coding CLI that ships as a single binary. It is built for local-first, terminal-first workflows: interactive TUI, line REPL, one-shot runs, detached sessions, attach/status/logs, JSON and NDJSON output, Unix-socket IPC, and worktree-isolated subagents.
 
-The focus here is simple: keep making the CLI better. Better harnessing, better spawning, better tooling, and better machine-readable surfaces. No JavaScript, no Electron, no browser in the default path. Just one `nca` binary with Unix-socket IPC and JSON/NDJSON when you need automation.
+The product surface is the CLI. There is no browser or desktop shell in the default path.
 
-## Why nca
+## What It Does
 
-Most coding CLIs are optimized for one interactive session. `nca` is aimed more at **worker-style usage**: spawn a task, attach later, run child agents in worktrees, and keep the overhead low enough that parallel runs are actually practical.
-
-| Why it matters | What you get |
-|----------------|--------------|
-| **Performance** | Fast startup and a tight Rust stack, so each new run stays cheap. |
-| **Low memory use** | You can keep many sessions and child runs around without paying for a heavy UI/runtime on each one. |
-| **Spawn-first workflows** | First-class `spawn`, `sessions`, `attach`, worktree-isolated **sub-agents**, and clear parent/child lineage. |
-| **Automation-friendly** | `run` / `spawn` / `status` / `cancel` with `--json`, NDJSON event streams, and `NCA_ORCH_*` metadata for external control planes. |
-
-This repo is **CLI-only**. If what you really want is a dashboard, a desktop shell, or higher-level agent orchestration, use a separate orchestration layer and let `nca` be the executor.
-
-## Desktop mode & agent orchestration
-
-If you want a **web dashboard**, multi-agent supervision, or a **desktop control plane**, this repository is not trying to do that itself. Instead, use an orchestration layer that can call `nca` through its [orchestration contract](docs/orchestration.md):
-
-- **[Paperclip](https://github.com/paperclipai/paperclip)** — an orchestration layer for coordinating many agents, goals, approvals, and governance.  
-- **[Enterprise Orchestration](https://github.com/madebyaris/enterprise-orchestration)** *(from us)* — a local-first desktop/control-plane project where **native-cli-ai** is a first-class executor target.
-
-## Why Try It
-
-- Rust-native stack from top to bottom.
-- MiniMax-first by default, with compatibility for OpenAI, Anthropic/Claude, and OpenRouter.
-- Headless-friendly JSON and NDJSON surfaces for orchestration systems.
-- Background sessions, event logs, attachable runs, and isolated child-agent worktrees.
-- JSON/NDJSON surfaces for automation and subprocess integration.
-
-## Product Direction
-
-We are leaning further into the CLI instead of backing away from it: stronger harness defaults, fail-loud provider behavior, a richer tool surface, and stable event schemas for people building wrappers around `nca`.
-
-- Session lifecycle, events, and approvals all use the same runtime IPC (`attach`, approvals, shutdown).
-- Interactive clarification uses the `ask_question` tool: structured options, optional custom text, always a model `suggested_answer`, plus `/auto-answer` in the REPL/TUI to accept the suggestion.
-- Child sessions get **git worktrees** and explicit lineage so parallel agents do not step on each other.
-
-If you are building a control plane, the intended split is straightforward: let `nca` stay the **lean worker process**, and let tools like Paperclip or Enterprise Orchestration handle dashboards, persistence, and fleet-level coordination.
+- Runs coding tasks in an interactive TUI or a line-oriented REPL.
+- Supports one-shot runs and detached background sessions.
+- Persists session state and event logs under the current workspace.
+- Exposes machine-readable JSON and NDJSON for automation.
+- Spawns child agents with explicit parent/child lineage and optional git worktrees.
+- Uses MiniMax by default, with OpenAI, Anthropic, and OpenRouter support.
+- Loads built-in tools plus optional MCP tools from config.
 
 ## Quick Start
 
-This workspace uses Rust edition 2024, so use a recent Rust toolchain first.
+This workspace uses Rust edition 2024, so use a recent Rust toolchain.
 
 ```bash
-# Build release binaries
+# Build and install
 cargo build --release
-
-# Install locally
 cp target/release/nca /usr/local/bin/
 
-# Configure MiniMax (default provider)
+# Configure the default provider
 export MINIMAX_API_KEY="your-api-key"
 
-# Start the interactive CLI (full-screen TUI when stdout+stdin are TTYs and --stream human)
+# Start the interactive CLI
 nca
-# Line-oriented REPL instead: scripts, piped stdin, or tricky tool-approval prompts
+
+# Line REPL instead of the full-screen TUI
 nca --no-tui
 
-# Run a one-shot task
-nca run --prompt "Explain this repository" --stream human
+# Run one task and exit
+nca run --prompt "Explain this repository"
 
-# Spawn a background worker
+# Spawn a detached session
 nca spawn --prompt "Inspect the repo and draft a plan"
 
 # Inspect and attach
@@ -75,98 +46,127 @@ nca status <session_id>
 nca attach <session_id>
 ```
 
-The full-screen CLI cannot change your font from Rust—it follows your terminal’s monospace setting. For a modern look (and correct TUI alignment), see [CLI terminal fonts](docs/cli-terminal-fonts.md).
+The full-screen UI appears when `stdin` and `stdout` are TTYs and `--stream human` is active. Otherwise `nca` falls back to the line-oriented REPL or one-shot execution path.
 
-## Built For Agent Orchestration
+## Core Commands
 
-`nca` is designed to be launched by other systems, wrappers, and local control planes.
+| Command | Purpose |
+|---|---|
+| `nca` | Start the default interactive experience. Auto-resumes the last session unless `--no-resume` is used. |
+| `nca run --prompt ...` | Run one task in the foreground. |
+| `nca spawn --prompt ...` | Start a detached session and return immediately. |
+| `nca resume <session_id>` | Resume a saved session. |
+| `nca attach <session_id>` | Attach to a running session over IPC. |
+| `nca logs <session_id>` | Read or follow the event log. |
+| `nca status <session_id>` | Show session status and metadata. |
+| `nca cancel <session_id>` | Mark a detached session as cancelled. |
+| `nca sessions` | List saved sessions, with filters like `--status`, `--since-hours`, and `--search`. |
+| `nca models` | Show configured models and provider-facing defaults. |
+| `nca doctor` | Check provider readiness, skills, and memory/config paths. |
+| `nca config` | Print effective config and resolved paths. |
+| `nca memory list|add` | Inspect or append workspace memory notes. |
+| `nca skills` | List discovered skills. |
+| `nca mcp` | List configured MCP servers. |
+| `nca completion <shell>` | Generate shell completions. |
+| `nca index build|show` | Build or inspect a cached CLI index under `~/.nca/workspaces/<workspace-id>/`. |
+| `nca autoresearch ...` | Experimental autonomous research helpers. |
 
-- `nca run --stream off --json` returns a final structured result.
-- `nca run --stream ndjson` streams live `EventEnvelope` updates.
-- `nca spawn --json`, `status --json`, `sessions --json`, and `cancel --json` give machine-readable lifecycle control.
-- `NCA_ORCH_*` environment variables let orchestrators inject run metadata into session state and the harness.
-- Headless approval failures fail loudly instead of hanging forever.
+There is also a hidden `serve` subcommand used for IPC-oriented service sessions.
 
-Local persistence is workspace-first:
+## Interactive UX
 
-- `<workspace>/.nca/sessions/` for session snapshots and event logs
-- `~/.nca/config.toml` (and optional `.nca/config.local.toml`) for global settings
+The interactive surface has two modes:
 
-See [Orchestration Contract](docs/orchestration.md) for the exact subprocess surface.
+- Full-screen TUI with transcript, composer, approvals, structured questions, slash-command palette, session sidebar, and branch picker.
+- Line-oriented REPL built on `reedline` for scripts, terminals where TUI is not desired, or cases where `--no-tui` is easier.
 
-## Provider Story
+Useful interactive behaviors:
 
-- MiniMax is the default and recommended path.
-- OpenAI, Anthropic/Claude, and OpenRouter are also supported.
-- Config loads from `~/.nca/config.toml`, `.nca/config.local.toml`, and provider-specific environment variables.
-- `nca doctor` and `nca models` expose provider readiness and active model selection.
+- `! <cmd>` runs a shell command.
+- `@ <query>` searches files.
+- `/...` runs slash commands.
+- `Tab` cycles agent profiles such as `build`, `plan`, `review`, `fix`, and `test`.
+- `Ctrl+C` or `/stop` cancels the current running turn.
+- `/auto-answer` accepts the suggested answer for a pending `ask_question`.
 
-Example provider environment variables:
+## Output and Automation
+
+`nca` is designed to work both as a human-facing CLI and as a worker process.
+
+- `--stream off` returns only the final output.
+- `--stream human` renders the normal terminal experience.
+- `--stream ndjson` emits newline-delimited event envelopes.
+- `--json` is available on lifecycle-oriented commands such as `spawn`, `sessions`, `status`, and `cancel`.
+- `NCA_ORCH_*` and `NCA_ORCH_META_*` environment variables attach orchestration metadata to sessions and harness context.
+
+See [Orchestration Contract](docs/orchestration.md) for the subprocess-facing surface.
+
+## Storage and Paths
+
+`nca` is workspace-first. The current workspace keeps its own session history and local state.
+
+| Path | Purpose |
+|---|---|
+| `~/.nca/config.toml` | Global config file. |
+| `<workspace>/.nca/config.local.toml` | Workspace-local config overrides. |
+| `<workspace>/.nca/sessions/<id>.json` | Saved session state. |
+| `<workspace>/.nca/sessions/<id>.events.jsonl` | Event log for the session. |
+| `<workspace>/.nca/memory.json` | Default memory store. |
+| `<workspace>/.nca/skills/` | Default workspace skill directory. |
+| `<repo>/.nca/worktrees/<session-id>` | Worktree path for isolated child sessions. |
+| `$XDG_RUNTIME_DIR/nca/<session_id>.sock` | IPC socket path when `XDG_RUNTIME_DIR` is set. |
+| `/tmp/nca/<session_id>.sock` | IPC socket fallback when `XDG_RUNTIME_DIR` is not set. |
+| `~/.nca/workspaces/<workspace-id>/cli-index.json` | Cached CLI index for agents and tooling. |
+| `.ncarc` | Project instructions file committed with the repo. |
+| `.nca/instructions.md` | Local instructions file. |
+
+## Providers
+
+MiniMax is the default provider path. The codebase also supports OpenAI, Anthropic, and OpenRouter.
+
+Typical environment variables:
 
 - `MINIMAX_API_KEY`
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `OPENROUTER_API_KEY`
 
-## Harness Layers
+Provider config is loaded from defaults, then `~/.nca/config.toml`, then `<workspace>/.nca/config.local.toml`, then environment overrides.
 
-The system prompt is layered so repo defaults stay strong without blocking team or local overrides.
+Use `nca doctor` to verify provider readiness and `nca models` to inspect model selection.
+
+## Harness and Tooling
+
+The system prompt is layered in this order:
 
 1. Built-in harness prompt
-2. Permission mode section
+2. Permission-mode guidance
 3. Project instructions from `.ncarc`
 4. Local instructions from `.nca/instructions.md`
 5. Discovered skills summary
 6. Orchestration context
 
-You can commit `.ncarc` for shared conventions and keep `.nca/instructions.md` local.
+The built-in tool surface includes filesystem editing, search, diffing, patching, shell execution, web access, `ask_question`, and `spawn_subagent`. MCP tools are loaded dynamically when configured, so the available tool set can expand beyond the built-ins.
 
-## CLI Surfaces
+## Crate Layout
 
-- Interactive REPL
-- One-shot `run`
-- Background `spawn`
-- Session `resume`
-- Event `logs`
-- Live `attach`
-- Per-session `status`
-- `cancel` for spawned work
-- Stream modes: `off`, `human`, `ndjson`
-- Permission modes: `default`, `plan`, `accept-edits`, `dont-ask`, `bypass-permissions`
+| Crate | Responsibility |
+|---|---|
+| `crates/common` | Shared config, events, sessions, messages, tool schemas, and orchestration metadata. |
+| `crates/core` | Agent loop, provider abstraction, harness builder, skills, approvals, and tool registry. |
+| `crates/runtime` | Session supervision, IPC, persistence, worktrees, memory store, and subagent execution. |
+| `crates/cli` | `nca` entrypoint, command parsing, stream rendering, REPL, and TUI. |
 
-## Tools
+## Session Model
 
-Current tool-running path supports:
-
-- `read_file`
-- `search_code`
-- `list_directory`
-- `write_file`
-- `create_directory`
-- `git_status`
-- `git_diff`
-- `query_symbols`
-- `web_search`
-- `fetch_url`
-- `apply_patch`
-- `edit_file`
-- `rename_path`
-- `move_path`
-- `copy_path`
-- `delete_path`
-- `run_validation`
-- `execute_bash`
-
-## Workspace Layout
-
-| Crate | Description |
-|-------|-------------|
-| `crates/common` | Shared types, config, events |
-| `crates/core` | Agent loop, provider abstraction, harness, tools |
-| `crates/runtime` | IPC, session lifecycle, persistence, worktree/runtime glue |
-| `crates/cli` | Terminal entrypoint and machine-facing control plane |
+- Sessions are persisted as JSON snapshots plus JSONL event logs.
+- The runtime uses a `Supervisor` to own lifecycle, IPC, approvals, questions, event fanout, and persistence.
+- Child sessions can inherit parent context, record lineage in session metadata, and run inside separate git worktrees.
+- IPC uses newline-delimited JSON over Unix sockets so `attach`, approvals, status, and other controls share one runtime transport.
 
 ## Documentation
+
+The root README is the quick-start guide. Use the docs folder for deeper detail:
 
 - [Product Requirements](docs/prd.md)
 - [Tech Stack](docs/tech-stack.md)
