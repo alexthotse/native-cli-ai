@@ -125,6 +125,24 @@ impl TuiSessionState {
         self.blocks.push(DisplayBlock::ErrorLine(msg));
     }
 
+    /// Approval/question prompts from replayed history are transcript only.
+    /// The live pending channels are not restored on resume, so these must not
+    /// keep the input box in approval/answer mode.
+    pub fn clear_replayed_interaction_state(&mut self) {
+        self.active_approval = None;
+        self.active_question = None;
+    }
+
+    pub fn clear_active_approval_if_matches(&mut self, call_id: &str) {
+        if self
+            .active_approval
+            .as_ref()
+            .is_some_and(|req| req.call_id == call_id)
+        {
+            self.active_approval = None;
+        }
+    }
+
     pub fn set_agent_profile(&mut self, label: &str) {
         self.agent_profile = label.to_string();
     }
@@ -524,5 +542,34 @@ mod tests {
             }
             other => panic!("expected approval block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn clear_replayed_interaction_state_drops_stale_prompts() {
+        let mut st = TuiSessionState::new(
+            "session-x".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+        );
+        st.active_approval = Some(ApprovalRequest {
+            call_id: "call-1".into(),
+            tool: "execute_bash".into(),
+            description: "approve".into(),
+            input: "{}".into(),
+        });
+        st.active_question = Some(InteractiveQuestionPayload {
+            question_id: "q-1".into(),
+            call_id: "call-2".into(),
+            prompt: "Pick".into(),
+            options: vec![],
+            allow_custom: true,
+            suggested_answer: String::new(),
+        });
+
+        st.clear_replayed_interaction_state();
+
+        assert!(st.active_approval.is_none());
+        assert!(st.active_question.is_none());
     }
 }

@@ -197,6 +197,23 @@ impl Repl {
     pub async fn run(&mut self) -> anyhow::Result<()> {
         let mut editor = self.build_editor()?;
 
+        let _spawn_task = {
+            let spawn_rx = self.runtime.take_spawn_rx();
+            let event_tx = self.runtime.event_tx();
+            if let Some(srx) = spawn_rx {
+                Some(nca_runtime::supervisor::spawn_subagent_consumer(
+                    srx,
+                    self.runtime.session_id().to_string(),
+                    self.runtime.workspace_root().to_path_buf(),
+                    self.runtime.config().clone(),
+                    self.runtime.messages().to_vec(),
+                    event_tx,
+                ))
+            } else {
+                None
+            }
+        };
+
         if self.run_mode {
             self.print_banner();
         }
@@ -486,6 +503,10 @@ impl Repl {
 
         match command {
             "/q" | "/quit" | "/exit" => return Ok(false),
+            "/stop" => {
+                self.runtime.request_cancel();
+                out.println("[stop] cancelling current turn…");
+            }
             "/help" => {
                 out.print(
                     "nca Interactive Mode - Claude Code inspired shortcuts:\n\n\
@@ -522,6 +543,7 @@ impl Repl {
                        /sessions                  List local session IDs\n\
                        /permissions [mode]        Show or set permission mode\n\
                        /permission-bypass [on|off|toggle]  Quick bypass toggle (default: toggle)\n\
+                       /stop                      Cancel the current running turn\n\
                        /exit                      Exit repl\n\n\
                      KEYBOARD SHORTCUTS:\n\
                        Tab                         Switch agent profile (@build -> @plan -> @review)\n\
@@ -1035,6 +1057,23 @@ impl Repl {
             tui_state.clone(),
         );
 
+        let _spawn_task = {
+            let spawn_rx = self.runtime.take_spawn_rx();
+            let event_tx = self.runtime.event_tx();
+            if let Some(srx) = spawn_rx {
+                Some(nca_runtime::supervisor::spawn_subagent_consumer(
+                    srx,
+                    self.runtime.session_id().to_string(),
+                    self.runtime.workspace_root().to_path_buf(),
+                    self.runtime.config().clone(),
+                    self.runtime.messages().to_vec(),
+                    event_tx,
+                ))
+            } else {
+                None
+            }
+        };
+
         // Answers must bypass the main `cmd_rx` loop: while `run_turn` is blocked inside
         // `ask_question`, that task never receives `TuiCmd::Submit` or `QuestionAnswer`.
         let (answer_tx, mut answer_rx) =
@@ -1056,8 +1095,9 @@ impl Repl {
             while let Some((call_id, approved)) = approval_rx.recv().await {
                 if !dispatch_tool_approval(&approval_dispatch, &call_id, approved) {
                     if let Ok(mut g) = approval_state.lock() {
+                        g.clear_active_approval_if_matches(&call_id);
                         g.push_error(
-                            "failed to resolve approval (expired or already handled)".into(),
+                            "approval was no longer pending; cleared stale approval state".into(),
                         );
                     }
                 }

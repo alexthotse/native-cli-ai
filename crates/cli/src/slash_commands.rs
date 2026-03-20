@@ -22,6 +22,7 @@ pub const SLASH_COMMANDS: &[&str] = &[
     "/permissions",
     "/permission-bypass",
     "/sessions",
+    "/stop",
     "/exit",
     "/quit",
     "/q",

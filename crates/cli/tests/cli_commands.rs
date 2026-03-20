@@ -424,3 +424,84 @@ model = "claude-3-7-sonnet-latest"
             && entry["api_key_present"] == false
     }));
 }
+
+#[test]
+fn index_build_writes_cli_index_json_under_nca_home() {
+    let ws = tempdir().expect("ws");
+    let home = tempdir().expect("home");
+    write_local_config(ws.path());
+
+    Command::cargo_bin("nca")
+        .expect("binary")
+        .current_dir(ws.path())
+        .env("HOME", home.path())
+        .args(["index", "build"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("wrote"));
+
+    let workspaces = home.path().join(".nca/workspaces");
+    assert!(workspaces.is_dir(), "expected {:?}", workspaces);
+    let mut index_path = None;
+    for entry in fs::read_dir(&workspaces).expect("read workspaces") {
+        let p = entry.expect("entry").path().join("cli-index.json");
+        if p.is_file() {
+            index_path = Some(p);
+            break;
+        }
+    }
+    let index_path = index_path.expect("cli-index.json under workspaces");
+    let raw = fs::read_to_string(&index_path).expect("read index");
+    let v: Value = serde_json::from_str(&raw).expect("parse index");
+    assert_eq!(v["schema_version"], 1);
+    let cmds = v["commands"].as_array().expect("commands");
+    assert!(!cmds.is_empty());
+    assert!(cmds.iter().any(|c| c["path"] == serde_json::json!(["run"])));
+}
+
+#[test]
+fn index_show_and_build_json_status() {
+    let ws = tempdir().expect("ws");
+    let home = tempdir().expect("home");
+    write_local_config(ws.path());
+
+    Command::cargo_bin("nca")
+        .expect("binary")
+        .current_dir(ws.path())
+        .env("HOME", home.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("nca")
+        .expect("binary")
+        .current_dir(ws.path())
+        .env("HOME", home.path())
+        .args(["index", "show"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("CLI index"));
+
+    Command::cargo_bin("nca")
+        .expect("binary")
+        .current_dir(ws.path())
+        .env("HOME", home.path())
+        .args(["index", "show", "--json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("schema_version"));
+
+    let out = Command::cargo_bin("nca")
+        .expect("binary")
+        .current_dir(ws.path())
+        .env("HOME", home.path())
+        .args(["index", "build", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status: Value = serde_json::from_slice(&out).expect("status json");
+    assert!(status["path"].as_str().unwrap().contains("cli-index.json"));
+    assert!(status["workspace_id"].as_str().unwrap().len() > 10);
+}

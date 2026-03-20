@@ -647,12 +647,40 @@ fn render_approval_block(
         lines,
         hits,
         Line::from(Span::styled(
-            " Reply with y/yes or n/no, then press Enter.",
+            " Reply: y / yes / ok to approve · n / no / deny to deny · or Ctrl+Y / Ctrl+N · /approve / /deny",
             Style::default().fg(theme::MUTED),
         )),
         None,
     );
     push_transcript_line(lines, hits, Line::default(), None);
+}
+
+/// Parse user approval input (flexible: punctuation, synonyms, `/approve` style).
+fn parse_approval_verdict(line: &str) -> Option<bool> {
+    let mut s = line.trim().to_lowercase();
+    while matches!(
+        s.chars().last(),
+        Some('.' | '!' | '?' | ',' | ';' | ':' | '"' | '\'')
+    ) {
+        s.pop();
+    }
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Slash commands (handled before this in caller for passthrough; bare forms here too)
+    match s {
+        "/approve" | "/y" | "/yes" | "/ok" => return Some(true),
+        "/deny" | "/n" | "/no" => return Some(false),
+        _ => {}
+    }
+    let word = s.split_whitespace().next()?;
+    match word {
+        "y" | "yes" | "ok" | "okay" | "approve" | "approved" | "allow" | "1" | "true" => Some(true),
+        "n" | "no" | "deny" | "denied" | "reject" | "rejected" | "decline" | "declined" | "0"
+        | "false" => Some(false),
+        _ => None,
+    }
 }
 
 fn parse_md_line(line: &str) -> Line<'static> {
@@ -1080,7 +1108,7 @@ pub fn run_blocking(
 
                 let hint = if g.active_approval.is_some() {
                     Line::from(Span::styled(
-                        "Approval pending: type y/yes to approve or n/no to deny, then press Enter",
+                        "Approval: y / yes / ok · n / no / deny · Ctrl+Y approve · Ctrl+N deny · /approve / /deny · other /commands still work",
                         Style::default().fg(theme::ERROR),
                     ))
                 } else if g.active_question.is_some() {
@@ -1357,6 +1385,30 @@ pub fn run_blocking(
                                 let _ = cmd_tx.send(TuiCmd::CycleAgent);
                             }
                         }
+                        (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                            if let Some(req) = g.active_approval.clone() {
+                                let call_id = req.call_id.clone();
+                                g.input_buffer.clear();
+                                g.cursor_char_idx = 0;
+                                drop(g);
+                                if let Some(ref tx) = approval_answer_tx {
+                                    let _ = tx.send((call_id, true));
+                                }
+                                continue;
+                            }
+                        }
+                        (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                            if let Some(req) = g.active_approval.clone() {
+                                let call_id = req.call_id.clone();
+                                g.input_buffer.clear();
+                                g.cursor_char_idx = 0;
+                                drop(g);
+                                if let Some(ref tx) = approval_answer_tx {
+                                    let _ = tx.send((call_id, false));
+                                }
+                                continue;
+                            }
+                        }
                         (KeyCode::Enter, _) => {
                             let line = std::mem::take(&mut g.input_buffer);
                             g.cursor_char_idx = 0;
@@ -1364,12 +1416,36 @@ pub fn run_blocking(
                             let active_approval = g.active_approval.clone();
                             let active_q = g.active_question.clone();
                             if let Some(req) = active_approval {
-                                let verdict = match line.trim().to_ascii_lowercase().as_str() {
-                                    "y" | "yes" => Some(true),
-                                    "n" | "no" => Some(false),
-                                    _ => None,
-                                };
-                                if let Some(approved) = verdict {
+                                let t = line.trim();
+                                if t.is_empty() {
+                                    g.blocks.push(DisplayBlock::System(
+                                        "Empty line — type y or n (or yes/no, ok, deny). Ctrl+Y = approve, Ctrl+N = deny."
+                                            .into(),
+                                    ));
+                                    continue;
+                                }
+                                if t.starts_with('/') {
+                                    let lower = t.to_lowercase();
+                                    let slash_verdict = match lower.as_str() {
+                                        "/approve" | "/y" | "/yes" | "/ok" => Some(true),
+                                        "/deny" | "/n" | "/no" => Some(false),
+                                        _ => None,
+                                    };
+                                    if let Some(approved) = slash_verdict {
+                                        let call_id = req.call_id.clone();
+                                        drop(g);
+                                        if let Some(ref tx) = approval_answer_tx {
+                                            let _ = tx.send((call_id, approved));
+                                        } else {
+                                            let _ = cmd_tx.send(TuiCmd::CancelTurn);
+                                        }
+                                        continue;
+                                    }
+                                    drop(g);
+                                    let _ = cmd_tx.send(TuiCmd::Submit(line));
+                                    continue;
+                                }
+                                if let Some(approved) = parse_approval_verdict(t) {
                                     let call_id = req.call_id.clone();
                                     drop(g);
                                     if let Some(ref tx) = approval_answer_tx {
@@ -1380,7 +1456,8 @@ pub fn run_blocking(
                                     continue;
                                 }
                                 g.blocks.push(DisplayBlock::System(
-                                    "Invalid approval answer: use y/yes or n/no.".into(),
+                                    "Could not parse approval — try y, n, yes, no, ok, deny, or Ctrl+Y / Ctrl+N."
+                                        .into(),
                                 ));
                                 continue;
                             }
@@ -1535,4 +1612,34 @@ pub fn run_blocking(
     restore_terminal();
     let _ = execute!(stdout(), MoveToColumn(0));
     Ok(())
+}
+
+#[cfg(test)]
+mod approval_parse_tests {
+    use super::parse_approval_verdict;
+
+    #[test]
+    fn parses_yes_with_punctuation_and_synonyms() {
+        assert_eq!(parse_approval_verdict("yes"), Some(true));
+        assert_eq!(parse_approval_verdict("Yes."), Some(true));
+        assert_eq!(parse_approval_verdict("  OK! "), Some(true));
+        assert_eq!(parse_approval_verdict("approve"), Some(true));
+        assert_eq!(parse_approval_verdict("/approve"), Some(true));
+        assert_eq!(parse_approval_verdict("/y"), Some(true));
+    }
+
+    #[test]
+    fn parses_no_and_deny() {
+        assert_eq!(parse_approval_verdict("n"), Some(false));
+        assert_eq!(parse_approval_verdict("no."), Some(false));
+        assert_eq!(parse_approval_verdict("deny"), Some(false));
+        assert_eq!(parse_approval_verdict("/deny"), Some(false));
+    }
+
+    #[test]
+    fn rejects_unknown() {
+        assert_eq!(parse_approval_verdict("maybe"), None);
+        assert_eq!(parse_approval_verdict("nope"), None);
+        assert_eq!(parse_approval_verdict(""), None);
+    }
 }

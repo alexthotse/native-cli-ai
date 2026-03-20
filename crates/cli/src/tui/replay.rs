@@ -62,6 +62,7 @@ pub async fn replay_event_log_into_state(log_path: &Path, state: &Arc<Mutex<TuiS
 
     if let Ok(mut g) = state.lock() {
         g.streaming_assistant = None;
+        g.clear_replayed_interaction_state();
     }
 
     tracing::debug!(path = %log_path.display(), events_applied = applied, "replayed event log into TUI");

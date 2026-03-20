@@ -5,6 +5,7 @@ mod runner;
 mod slash_commands;
 mod stream;
 mod tui;
+mod cli_index;
 
 use crate::approval_prompts::InteractiveIpcApprovalHandler;
 use clap::CommandFactory;
@@ -232,6 +233,27 @@ enum Command {
     Autoresearch {
         #[command(subcommand)]
         command: AutoresearchCmd,
+    },
+    /// Build or show a cached CLI index under ~/.nca/workspaces/<id>/ (for agents and tooling).
+    Index {
+        #[command(subcommand)]
+        command: IndexCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum IndexCmd {
+    /// Generate `cli-index.json` for the current workspace (canonical path → stable id).
+    Build {
+        /// Print JSON status (path, workspace_id) instead of a one-line message
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the last generated index (requires `index build` first).
+    Show {
+        /// Pretty-print full JSON; otherwise print a short summary
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -502,6 +524,14 @@ async fn try_main() -> anyhow::Result<()> {
         Some(Command::Completion { shell }) => {
             generate_shell_completion(shell);
         }
+        Some(Command::Index { command }) => match command {
+            IndexCmd::Build { json } => {
+                cli_index::run_index_build(&workspace_root, json).await?;
+            }
+            IndexCmd::Show { json } => {
+                cli_index::run_index_show(&workspace_root, json).await?;
+            }
+        },
         Some(Command::Autoresearch { command }) => match command {
             AutoresearchCmd::Once { program, workspace } => {
                 let ws = workspace.unwrap_or_else(|| workspace_root.clone());
