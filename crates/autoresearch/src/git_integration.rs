@@ -281,7 +281,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn init_test_repo() -> Result<(TempDir, GitManager)> {
+    async fn init_test_repo() -> Result<(TempDir, GitManager)> {
         let temp = TempDir::new()?;
         
         // Initialize git repo
@@ -289,19 +289,30 @@ mod tests {
             .current_dir(temp.path())
             .args(&["init"])
             .output()
+            .await
             .expect("git init failed");
 
         Command::new("git")
             .current_dir(temp.path())
             .args(&["config", "user.email", "test@test.com"])
             .output()
+            .await
             .expect("git config failed");
 
         Command::new("git")
             .current_dir(temp.path())
             .args(&["config", "user.name", "Test"])
             .output()
+            .await
             .expect("git config failed");
+
+        // Add an initial commit so HEAD is valid
+        Command::new("git")
+            .current_dir(temp.path())
+            .args(&["commit", "--allow-empty", "-m", "initial"])
+            .output()
+            .await
+            .expect("git commit failed");
 
         let manager = GitManager::new(temp.path());
         Ok((temp, manager))
@@ -309,14 +320,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_current_branch() {
-        let (_temp, manager) = init_test_repo().unwrap();
+        let (_temp, manager) = init_test_repo().await.unwrap();
         let branch = manager.current_branch().await.unwrap();
-        assert_eq!(branch, "master");
+        // git init defaults to "master" or "main" depending on version
+        assert!(branch == "master" || branch == "main", "expected master or main, got {branch}");
     }
 
     #[tokio::test]
     async fn test_commit() {
-        let (_temp, manager) = init_test_repo().unwrap();
+        let (_temp, manager) = init_test_repo().await.unwrap();
         
         // Create a file
         std::fs::write(manager.repo_path.join("test.txt"), "hello").unwrap();
@@ -328,7 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_dirty() {
-        let (_temp, manager) = init_test_repo().unwrap();
+        let (_temp, manager) = init_test_repo().await.unwrap();
         
         assert!(!manager.is_dirty().await.unwrap());
         

@@ -155,19 +155,25 @@ mod tests {
 
     #[test]
     fn test_session_lifecycle() {
+        use program::{EditableFile, FixedFile, MetricCommand, MetricGoal};
+
         let program = ResearchProgram {
             name: "test".to_string(),
             description: "Test program".to_string(),
-            editable_files: vec!["train.py".into()],
-            fixed_files: vec!["prepare.py".into()],
+            editable_files: vec![EditableFile::new("train.py")],
+            fixed_files: vec![FixedFile {
+                path: std::path::PathBuf::from("prepare.py"),
+                reason: "Fixed".to_string(),
+            }],
             metric_command: MetricCommand {
                 command: "grep val_bpb".to_string(),
                 parse_regex: r"val_bpb:\s*([\d.]+)".to_string(),
             },
-            metric_goal: program::MetricGoal::Minimize,
+            metric_goal: MetricGoal::Minimize,
             time_budget_seconds: 300,
             extra_constraints: vec![],
             max_memory_gb: Some(50.0),
+            instructions: String::new(),
         };
 
         let session = AutoResearchSession::new(program, PathBuf::from("."), "test".into());
@@ -181,6 +187,8 @@ mod tests {
 
     #[test]
     fn test_metric_improvement() {
+        use program::{EditableFile, FixedFile, MetricCommand, MetricGoal};
+
         let program = ResearchProgram {
             name: "test".to_string(),
             description: "Test".to_string(),
@@ -190,10 +198,11 @@ mod tests {
                 command: "echo".to_string(),
                 parse_regex: r"([\d.]+)".to_string(),
             },
-            metric_goal: program::MetricGoal::Minimize,
+            metric_goal: MetricGoal::Minimize,
             time_budget_seconds: 300,
             extra_constraints: vec![],
             max_memory_gb: None,
+            instructions: String::new(),
         };
 
         let session = AutoResearchSession::new(program, PathBuf::from("."), "test".into());
@@ -210,6 +219,11 @@ mod tests {
             status: ExperimentStatus::Keep,
             description: "improved".to_string(),
             timestamp: chrono::Utc::now(),
+            peak_vram_mb: None,
+            mfu_percent: None,
+            total_tokens_m: None,
+            num_steps: None,
+            num_params_m: None,
         };
 
         let mut session = session;

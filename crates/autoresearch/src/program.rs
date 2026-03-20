@@ -445,7 +445,26 @@ fn extract_file_path(line: &str) -> Option<PathBuf> {
             return Some(PathBuf::from(&line[start + 1..start + 1 + end]));
         }
     }
-    // Try to extract last word
+    // Try to extract the first word-like token that looks like a file path
+    // (ends in common source-file extensions, or is a bare path segment).
+    // This handles cases like "train.py — model code" where em-dash isn't whitespace.
+    let known_exts = ["rs", "py", "js", "ts", "go", "cpp", "c", "h", "toml", "json", "md", "txt", "sh", "css", "html"];
+    for token in line.split(|c: char| c.is_ascii_whitespace() || c == '—' || c == '–' || c == '-' || c == ':' || c == '(' || c == ')' || c == '[' || c == ']') {
+        let t = token.trim();
+        // Skip empty or punctuation-only
+        if t.is_empty() { continue; }
+        // Skip if it starts with common non-path markers
+        if t.starts_with('#') || t.starts_with('-') || t.starts_with('*') { continue; }
+        // Accept if it looks like a file (has a known extension, or looks like a path segment)
+        if t.contains('.') || t.starts_with("./") || t.starts_with("../") {
+            // Trim trailing punctuation
+            let clean = t.trim_end_matches(|c: char| c == '.' || c == ',' || c == ';' || c == '"' || c == '\'');
+            if !clean.is_empty() && clean != "-" && clean != "—" {
+                return Some(PathBuf::from(clean));
+            }
+        }
+    }
+    // Fallback: last space-separated word
     let parts: Vec<&str> = line.split_whitespace().collect();
     if let Some(last) = parts.last() {
         let last = last.trim_matches(|c| c == '`' || c == ',' || c == '.');
@@ -465,9 +484,9 @@ fn extract_value<'a>(line: &'a str, keys: Vec<&str>) -> Option<&'a str> {
             // Find the actual value after the key
             let key_len = key.len();
             let remaining = &line[pos + key_len..];
-            let value = remaining.trim_start_matches(|c: char| c == ':' || c == ' ' || c == '"' || c == '\'');
+            let value = remaining.trim_start_matches(|c: char| c == ':' || c == ' ' || c == '`' || c == '"' || c == '\'');
             if !value.is_empty() {
-                return Some(value.trim_end_matches(|c| c == '"' || c == '\''));
+                return Some(value.trim_end_matches(|c| c == '`' || c == '"' || c == '\''));
             }
         }
     }
