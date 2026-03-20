@@ -50,11 +50,23 @@ Lifecycle-critical events:
 - `ToolCallCompleted`
 - `ApprovalRequested`
 - `ApprovalResolved`
+- `QuestionRequested` (interactive `ask_question` tool; includes `suggested_answer`)
+- `QuestionResolved`
 - `Checkpoint`
 - `Response`
 - `SessionEnded`
 - `ChildSessionSpawned`
 - `ChildSessionCompleted`
+
+### Answering `QuestionRequested` over IPC
+
+When the model uses the `ask_question` tool, the runtime emits `QuestionRequested` with a `question_id`. Send a newline-delimited JSON command on the session socket:
+
+```json
+{"type":"AnswerQuestion","question_id":"q-<call-id>","selection":{"kind":"suggested"}}
+```
+
+`selection.kind` may be `suggested`, `option` (with `option_id`), or `custom` (with `text`). In the interactive CLI, `/auto-answer` accepts the suggested answer for the active question.
 
 ## Session Snapshot Shape
 

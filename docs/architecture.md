@@ -216,8 +216,12 @@ pub enum AgentEvent {
     Response { response: AgentResponse },
     ChildSessionSpawned { parent_session_id: String, child_session_id: String, task: String, workspace: PathBuf, branch: Option<String> },
     ChildSessionCompleted { parent_session_id: String, child_session_id: String, status: String },
+    QuestionRequested { question: InteractiveQuestionPayload },
+    QuestionResolved { question_id: String, selection: QuestionSelection },
 }
 ```
+
+`InteractiveQuestionPayload` carries `question_id`, `call_id`, `prompt`, `options` (`id` + `label`), `allow_custom`, and `suggested_answer` (always present for fast accept). `QuestionSelection` is an internal tagged enum: `suggested`, `option { option_id }`, or `custom { text }`.
 
 ### Command Schema
 
@@ -226,6 +230,7 @@ pub enum AgentCommand {
     SendMessage { content: String },
     ApproveToolCall { call_id: String },
     DenyToolCall { call_id: String },
+    AnswerQuestion { question_id: String, selection: QuestionSelection },
     Cancel,
     Shutdown,
 }

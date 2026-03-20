@@ -1,5 +1,5 @@
 use nca_common::config::{NcaConfig, PermissionMode};
-use nca_common::event::{AgentEvent, EndReason};
+use nca_common::event::{AgentEvent, EndReason, QuestionSelection};
 use nca_common::session::{OrchestrationContext, SessionSnapshot};
 use nca_core::approval::ApprovalHandler;
 use nca_core::provider::ProviderError;
@@ -11,11 +11,31 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
+/// Resolve a pending `ask_question` without going through `SessionRuntime` (e.g. TUI side task
+/// while `run_turn` is blocked waiting on the same question).
+pub fn dispatch_question_answer(
+    qp: &Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    question_id: &str,
+    selection: QuestionSelection,
+) -> bool {
+    let Some(qp) = qp else {
+        return false;
+    };
+    let Ok(mut m) = qp.lock() else {
+        return false;
+    };
+    let Some(tx) = m.remove(question_id) else {
+        return false;
+    };
+    tx.send(selection).is_ok()
+}
+
 /// Thin CLI wrapper around the runtime `Supervisor`.
 /// Keeps the same public API so existing CLI code (repl, main) works unchanged.
 pub struct SessionRuntime {
     supervisor: Supervisor,
     handle: Option<SupervisorHandle>,
+    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
     config: NcaConfig,
 }
 
@@ -48,6 +68,41 @@ impl SessionRuntime {
         &mut self,
     ) -> Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>> {
         self.handle.as_mut()?.take_approval_pending()
+    }
+
+    /// Pending `ask_question` resolvers (same map the runtime tool waits on).
+    pub fn question_pending(
+        &self,
+    ) -> Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>> {
+        self.question_pending.clone()
+    }
+
+    /// Submit an answer for the current interactive question (TUI / REPL).
+    pub fn submit_question_answer(
+        &self,
+        question_id: &str,
+        selection: QuestionSelection,
+    ) -> bool {
+        dispatch_question_answer(&self.question_pending, question_id, selection)
+    }
+
+    /// Accept the model's suggested answer when exactly one question is pending.
+    pub fn submit_suggested_answer(&self) -> bool {
+        let Some(ref qp) = self.question_pending else {
+            return false;
+        };
+        let Ok(mut m) = qp.lock() else {
+            return false;
+        };
+        let keys: Vec<String> = m.keys().cloned().collect();
+        if keys.len() != 1 {
+            return false;
+        }
+        let id = keys[0].clone();
+        let Some(tx) = m.remove(&id) else {
+            return false;
+        };
+        tx.send(QuestionSelection::Suggested).is_ok()
     }
 
     pub fn session_id(&self) -> &str {
@@ -146,10 +201,12 @@ pub async fn build_session_runtime(
     })
     .await?;
 
-    let handle = supervisor.take_handle();
+    let mut handle = supervisor.take_handle();
+    let question_pending = handle.take_question_pending();
     Ok(SessionRuntime {
         supervisor,
         handle: Some(handle),
+        question_pending,
         config,
     })
 }
@@ -169,10 +226,12 @@ pub async fn build_resumed_session_runtime(
         session_id,
     )
     .await?;
-    let handle = supervisor.take_handle();
+    let mut handle = supervisor.take_handle();
+    let question_pending = handle.take_question_pending();
     Ok(SessionRuntime {
         supervisor,
         handle: Some(handle),
+        question_pending,
         config,
     })
 }

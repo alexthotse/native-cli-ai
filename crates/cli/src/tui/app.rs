@@ -2,6 +2,7 @@
 
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::state::{DisplayBlock, TuiSessionState};
+use nca_common::event::QuestionSelection;
 use crossterm::{
     cursor::{Hide, MoveToColumn, Show},
     event::{
@@ -27,9 +28,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Per flattened transcript line: click selects this answer (same indices as `transcript_lines`).
+type LineAnswerHit = Option<QuestionSelection>;
+
 #[derive(Debug)]
 pub enum TuiCmd {
     Submit(String),
+    /// Answer for the current `ask_question` (from question mode or `/auto-answer`).
+    QuestionAnswer(nca_common::event::QuestionSelection),
     CycleAgent,
     CancelTurn,
     Exit,
@@ -136,52 +142,84 @@ pub fn restore_terminal() {
     let _ = disable_raw_mode();
 }
 
-/// Build scrollable transcript lines (for layout + scroll).
-fn transcript_lines(state: &TuiSessionState, width: u16) -> Vec<Line<'static>> {
+#[inline]
+fn push_transcript_line(
+    lines: &mut Vec<Line<'static>>,
+    hits: &mut Vec<LineAnswerHit>,
+    line: Line<'static>,
+    hit: LineAnswerHit,
+) {
+    lines.push(line);
+    hits.push(hit);
+}
+
+/// Build scrollable transcript lines + optional mouse/click targets per line.
+fn transcript_lines_and_hits(state: &TuiSessionState, width: u16) -> (Vec<Line<'static>>, Vec<LineAnswerHit>) {
     let w = width.max(20) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut hits: Vec<LineAnswerHit> = Vec::new();
 
     for block in &state.blocks {
         match block {
             DisplayBlock::User(content) => {
-                lines.push(Line::from(vec![Span::styled(
-                    " YOU ",
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(theme::USER)
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                lines.push(Line::default());
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(vec![Span::styled(
+                        " YOU ",
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(theme::USER)
+                            .add_modifier(Modifier::BOLD),
+                    )]),
+                    None,
+                );
+                push_transcript_line(&mut lines, &mut hits, Line::default(), None);
                 for text_line in wrap_text(content, w) {
-                    lines.push(Line::from(Span::styled(text_line, Style::default().fg(theme::TEXT))));
+                    push_transcript_line(
+                        &mut lines,
+                        &mut hits,
+                        Line::from(Span::styled(text_line, Style::default().fg(theme::TEXT))),
+                        None,
+                    );
                 }
-                lines.push(Line::default());
+                push_transcript_line(&mut lines, &mut hits, Line::default(), None);
             }
             DisplayBlock::Assistant(content) => {
-                lines.push(Line::from(vec![Span::styled(
-                    " nca ",
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(theme::ASSISTANT)
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                lines.push(Line::default());
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(vec![Span::styled(
+                        " nca ",
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(theme::ASSISTANT)
+                            .add_modifier(Modifier::BOLD),
+                    )]),
+                    None,
+                );
+                push_transcript_line(&mut lines, &mut hits, Line::default(), None);
                 for text_line in wrap_text(content, w) {
-                    lines.push(parse_md_line(&text_line));
+                    push_transcript_line(&mut lines, &mut hits, parse_md_line(&text_line), None);
                 }
-                lines.push(Line::default());
+                push_transcript_line(&mut lines, &mut hits, Line::default(), None);
             }
             DisplayBlock::ToolRunning { name, .. } => {
-                lines.push(Line::from(vec![
-                    Span::styled(" ⚡ ", Style::default().fg(theme::TOOL)),
-                    Span::styled(
-                        format!("{name} "),
-                        Style::default()
-                            .fg(theme::TOOL)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("…", Style::default().fg(theme::MUTED)),
-                ]));
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(vec![
+                        Span::styled(" ⚡ ", Style::default().fg(theme::TOOL)),
+                        Span::styled(
+                            format!("{name} "),
+                            Style::default()
+                                .fg(theme::TOOL)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("…", Style::default().fg(theme::MUTED)),
+                    ]),
+                    None,
+                );
             }
             DisplayBlock::ToolDone { name, ok, detail } => {
                 let (icon, st) = if *ok {
@@ -189,59 +227,165 @@ fn transcript_lines(state: &TuiSessionState, width: u16) -> Vec<Line<'static>> {
                 } else {
                     ("✗", Style::default().fg(theme::ERROR))
                 };
-                lines.push(Line::from(vec![
-                    Span::styled(format!(" {icon} "), st),
-                    Span::styled(
-                        format!("{name}"),
-                        Style::default().fg(theme::TOOL).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(" — {}", truncate_chars(detail, 100)),
-                        Style::default().fg(theme::MUTED),
-                    ),
-                ]));
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(vec![
+                        Span::styled(format!(" {icon} "), st),
+                        Span::styled(
+                            format!("{name}"),
+                            Style::default().fg(theme::TOOL).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" — {}", truncate_chars(detail, 100)),
+                            Style::default().fg(theme::MUTED),
+                        ),
+                    ]),
+                    None,
+                );
             }
             DisplayBlock::System(s) => {
-                lines.push(Line::from(Span::styled(
-                    format!(" ‣ {s}"),
-                    Style::default().fg(theme::WARN),
-                )));
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(Span::styled(
+                        format!(" ‣ {s}"),
+                        Style::default().fg(theme::WARN),
+                    )),
+                    None,
+                );
+            }
+            DisplayBlock::Question(q) => {
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(vec![
+                        Span::styled(" ? ", Style::default().fg(Color::Black).bg(theme::WARN).bold()),
+                        Span::styled(
+                            " question ",
+                            Style::default().fg(theme::WARN).add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                    None,
+                );
+                push_transcript_line(&mut lines, &mut hits, Line::default(), None);
+                for text_line in wrap_text(&q.prompt, w) {
+                    push_transcript_line(
+                        &mut lines,
+                        &mut hits,
+                        Line::from(Span::styled(text_line, Style::default().fg(theme::TEXT))),
+                        None,
+                    );
+                }
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(vec![
+                        Span::styled(
+                            format!("  [0] suggested: {} ", q.suggested_answer),
+                            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::UNDERLINED),
+                        ),
+                        Span::styled("(click)", Style::default().fg(theme::MUTED)),
+                    ]),
+                    Some(QuestionSelection::Suggested),
+                );
+                for (i, o) in q.options.iter().enumerate() {
+                    push_transcript_line(
+                        &mut lines,
+                        &mut hits,
+                        Line::from(vec![
+                            Span::styled(
+                                format!("  [{}] ({}) {} ", i + 1, o.id, o.label),
+                                Style::default().fg(theme::TEXT).add_modifier(Modifier::UNDERLINED),
+                            ),
+                            Span::styled("(click)", Style::default().fg(theme::MUTED)),
+                        ]),
+                        Some(QuestionSelection::Option {
+                            option_id: o.id.clone(),
+                        }),
+                    );
+                }
+                if q.allow_custom {
+                    push_transcript_line(
+                        &mut lines,
+                        &mut hits,
+                        Line::from(Span::styled(
+                            "  [c] type your own answer below, then Enter",
+                            Style::default().fg(theme::MUTED),
+                        )),
+                        None,
+                    );
+                }
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(Span::styled(
+                        "  Tip: /auto-answer or Enter on empty = suggested · click an option above",
+                        Style::default().fg(theme::MUTED),
+                    )),
+                    None,
+                );
+                push_transcript_line(&mut lines, &mut hits, Line::default(), None);
             }
             DisplayBlock::ErrorLine(s) => {
-                lines.push(Line::from(Span::styled(
-                    format!(" ✗ {s}"),
-                    Style::default().fg(theme::ERROR),
-                )));
+                push_transcript_line(
+                    &mut lines,
+                    &mut hits,
+                    Line::from(Span::styled(
+                        format!(" ✗ {s}"),
+                        Style::default().fg(theme::ERROR),
+                    )),
+                    None,
+                );
             }
         }
     }
 
     if let Some(stream) = &state.streaming_assistant {
         if !stream.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled(" nca ", Style::default().fg(Color::Black).bg(theme::ASSISTANT)),
-                Span::styled(" streaming", Style::default().fg(theme::MUTED)),
-            ]));
-            lines.push(Line::default());
+            push_transcript_line(
+                &mut lines,
+                &mut hits,
+                Line::from(vec![
+                    Span::styled(" nca ", Style::default().fg(Color::Black).bg(theme::ASSISTANT)),
+                    Span::styled(" streaming", Style::default().fg(theme::MUTED)),
+                ]),
+                None,
+            );
+            push_transcript_line(&mut lines, &mut hits, Line::default(), None);
             for text_line in wrap_text(stream, w) {
-                lines.push(parse_md_line(&text_line));
+                push_transcript_line(&mut lines, &mut hits, parse_md_line(&text_line), None);
             }
         }
     }
 
     if lines.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("nca", Style::default().fg(theme::ASSISTANT).add_modifier(Modifier::BOLD)),
-            Span::styled(" — session ready", Style::default().fg(theme::MUTED)),
-        ]));
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            "Tab  agent   !cmd  shell   @path  search   /  commands   wheel  scroll",
-            Style::default().fg(theme::MUTED),
-        )));
+        push_transcript_line(
+            &mut lines,
+            &mut hits,
+            Line::from(vec![
+                Span::styled("nca", Style::default().fg(theme::ASSISTANT).add_modifier(Modifier::BOLD)),
+                Span::styled(" — session ready", Style::default().fg(theme::MUTED)),
+            ]),
+            None,
+        );
+        push_transcript_line(&mut lines, &mut hits, Line::default(), None);
+        push_transcript_line(
+            &mut lines,
+            &mut hits,
+            Line::from(Span::styled(
+                "Tab  agent   !cmd  shell   @path  search   /  commands   wheel  scroll",
+                Style::default().fg(theme::MUTED),
+            )),
+            None,
+        );
     }
 
-    lines
+    (lines, hits)
+}
+
+fn transcript_lines(state: &TuiSessionState, width: u16) -> Vec<Line<'static>> {
+    transcript_lines_and_hits(state, width).0
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -322,9 +466,35 @@ fn parse_md_line(line: &str) -> Line<'static> {
     Line::from(spans)
 }
 
+fn parse_tui_question_answer(
+    raw: &str,
+    q: &nca_common::event::InteractiveQuestionPayload,
+) -> Option<QuestionSelection> {
+    let t = raw.trim();
+    if t.is_empty() || t == "0" || t.eq_ignore_ascii_case("s") {
+        return Some(QuestionSelection::Suggested);
+    }
+    if let Ok(n) = t.parse::<usize>() {
+        if n >= 1 && n <= q.options.len() {
+            return Some(QuestionSelection::Option {
+                option_id: q.options[n - 1].id.clone(),
+            });
+        }
+    }
+    if q.allow_custom && !t.is_empty() {
+        return Some(QuestionSelection::Custom {
+            text: t.to_string(),
+        });
+    }
+    None
+}
+
+/// `question_answer_tx`: when `Some`, answers are sent there so they unblock `ask_question` while
+/// the async loop is stuck in `run_turn` (that task does not poll `cmd_rx` until the turn ends).
 pub fn run_blocking(
     state: Arc<Mutex<TuiSessionState>>,
     cmd_tx: UnboundedSender<TuiCmd>,
+    question_answer_tx: Option<UnboundedSender<(String, QuestionSelection)>>,
     show_run_banner: bool,
 ) -> anyhow::Result<()> {
     let mut terminal = setup_terminal()?;
@@ -352,10 +522,15 @@ pub fn run_blocking(
                 let (tr, st_r, slash_opt, inp_r) = layout_chunks(area, slash_h);
 
                 let transcript_h = tr.height.saturating_sub(2) as usize;
-                let lines = transcript_lines(&g, tr.width.saturating_sub(2));
+                let inner_w = tr.width.saturating_sub(2);
+                let (lines, _hits) = transcript_lines_and_hits(&g, inner_w);
                 let total = lines.len();
                 let max_scroll = total.saturating_sub(transcript_h);
-                g.scroll_lines = g.scroll_lines.min(max_scroll);
+                if g.transcript_follow_tail {
+                    g.scroll_lines = max_scroll;
+                } else {
+                    g.scroll_lines = g.scroll_lines.min(max_scroll);
+                }
                 let start = g.scroll_lines;
                 let end = (start + transcript_h).min(total);
                 let visible: Vec<Line> = if start < end {
@@ -365,7 +540,7 @@ pub fn run_blocking(
                 };
 
                 let title = format!(
-                    " transcript — {} lines (↑↓ wheel) ",
+                    " transcript — {} lines (↑↓ wheel · End bottom) ",
                     total
                 );
                 let main = Paragraph::new(Text::from(visible))
@@ -386,8 +561,14 @@ pub fn run_blocking(
                 } else {
                     Span::styled(" ○ idle ", Style::default().fg(theme::SUCCESS))
                 };
+                let q_hint = if g.active_question.is_some() {
+                    Span::styled(" ?answer ", Style::default().fg(theme::WARN))
+                } else {
+                    Span::raw("")
+                };
                 let status = Line::from(vec![
                     busy,
+                    q_hint,
                     Span::raw(" │ "),
                     Span::styled(&g.model, Style::default().fg(theme::USER)),
                     Span::raw(" │ "),
@@ -483,7 +664,12 @@ pub fn run_blocking(
                     ),
                 ]);
 
-                let hint = if g.input_buffer.is_empty() {
+                let hint = if g.active_question.is_some() {
+                    Line::from(Span::styled(
+                        "Enter / 0 = suggested · 1–n = option · click underlined line · /auto-answer · End = transcript bottom (empty input)",
+                        Style::default().fg(theme::WARN),
+                    ))
+                } else if g.input_buffer.is_empty() {
                     Line::from(Span::styled(
                         "Enter send · Tab agent · / for commands · Esc exit · Ctrl+L clear",
                         Style::default().fg(theme::MUTED),
@@ -492,12 +678,17 @@ pub fn run_blocking(
                     Line::default()
                 };
 
+                let input_title = if g.active_question.is_some() {
+                    " answer "
+                } else {
+                    " message "
+                };
                 let input_block = Paragraph::new(Text::from(vec![input_line, hint]))
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(Style::default().fg(theme::BORDER))
-                            .title(Span::styled(" message ", Style::default().fg(theme::MUTED))),
+                            .title(Span::styled(input_title, Style::default().fg(theme::MUTED))),
                     )
                     .style(Style::default().bg(theme::SURFACE));
 
@@ -518,17 +709,50 @@ pub fn run_blocking(
                     let (tr, _, slash_r, _) = layout_chunks(area, sh);
 
                     if rect_contains(tr, m.column, m.row) {
-                        let lines = transcript_lines(&g, tr.width.saturating_sub(2));
+                        let inner_w = tr.width.saturating_sub(2);
+                        let (lines, hits) = transcript_lines_and_hits(&g, inner_w);
                         let total = lines.len();
                         let th = tr.height.saturating_sub(2) as usize;
                         let max_scroll = total.saturating_sub(th);
                         match m.kind {
                             MouseEventKind::ScrollUp => {
+                                g.transcript_follow_tail = false;
                                 g.scroll_lines = g.scroll_lines.saturating_sub(MOUSE_SCROLL_LINES);
                             }
                             MouseEventKind::ScrollDown => {
                                 g.scroll_lines =
                                     (g.scroll_lines + MOUSE_SCROLL_LINES).min(max_scroll);
+                                if g.scroll_lines >= max_scroll {
+                                    g.transcript_follow_tail = true;
+                                }
+                            }
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                // Inner content starts below top border (y+1).
+                                let inner_top = tr.y.saturating_add(1);
+                                if m.row >= inner_top {
+                                    let row_in_area = (m.row - inner_top) as usize;
+                                    if row_in_area < th {
+                                        let gline = g.scroll_lines + row_in_area;
+                                        let picked = if gline < hits.len() {
+                                            hits[gline].clone().zip(
+                                                g.active_question
+                                                    .as_ref()
+                                                    .map(|q| q.question_id.clone()),
+                                            )
+                                        } else {
+                                            None
+                                        };
+                                        if let Some((sel, qid)) = picked {
+                                            drop(g);
+                                            if let Some(ref tx) = question_answer_tx {
+                                                let _ = tx.send((qid, sel));
+                                            } else {
+                                                let _ = cmd_tx.send(TuiCmd::QuestionAnswer(sel));
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -566,6 +790,7 @@ pub fn run_blocking(
                         g.blocks.clear();
                         g.streaming_assistant = None;
                         g.scroll_lines = 0;
+                        g.transcript_follow_tail = true;
                     }
                     (KeyCode::Tab, _) => {
                         let filtered = filter_slash_commands(&g.input_buffer);
@@ -582,14 +807,70 @@ pub fn run_blocking(
                         let line = std::mem::take(&mut g.input_buffer);
                         g.cursor_char_idx = 0;
                         g.slash_menu_index = 0;
+                        let active_q = g.active_question.clone();
+                        if let Some(ref q) = active_q {
+                            let t = line.trim();
+                            // `/auto-answer` must go through the side channel: `run_turn` is often
+                            // blocked on this question, so `cmd_rx` is not polled for Submit.
+                            if t == "/auto-answer" {
+                                let qid = q.question_id.clone();
+                                drop(g);
+                                if let Some(ref tx) = question_answer_tx {
+                                    let _ = tx.send((qid, QuestionSelection::Suggested));
+                                } else {
+                                    let _ = cmd_tx.send(TuiCmd::QuestionAnswer(
+                                        QuestionSelection::Suggested,
+                                    ));
+                                }
+                                continue;
+                            }
+                            if t.starts_with('/') {
+                                drop(g);
+                                let _ = cmd_tx.send(TuiCmd::Submit(line));
+                                continue;
+                            }
+                            if let Some(sel) = parse_tui_question_answer(&line, q) {
+                                let qid = q.question_id.clone();
+                                drop(g);
+                                if let Some(ref tx) = question_answer_tx {
+                                    let _ = tx.send((qid, sel));
+                                } else {
+                                    let _ = cmd_tx.send(TuiCmd::QuestionAnswer(sel));
+                                }
+                                continue;
+                            }
+                            g.blocks.push(DisplayBlock::System(
+                                "Invalid answer: use Enter/0 for suggested, 1–n for an option, or custom text."
+                                    .into(),
+                            ));
+                            continue;
+                        }
                         drop(g);
                         let _ = cmd_tx.send(TuiCmd::Submit(line));
                     }
                     (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
                         g.cursor_char_idx = 0;
                     }
-                    (KeyCode::Char('e'), KeyModifiers::CONTROL) | (KeyCode::End, _) => {
+                    (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
                         g.cursor_char_idx = g.input_buffer.chars().count();
+                    }
+                    (KeyCode::End, _) => {
+                        if !g.input_buffer.is_empty() {
+                            g.cursor_char_idx = g.input_buffer.chars().count();
+                        } else {
+                            let sz = terminal.size().ok();
+                            if let Some(sz) = sz {
+                                let area = Rect::new(0, 0, sz.width, sz.height);
+                                let sh =
+                                    slash_panel_height(filter_slash_commands(&g.input_buffer).len());
+                                let (tr, _, _, _) = layout_chunks(area, sh);
+                                let total = transcript_lines(&g, tr.width.saturating_sub(2)).len();
+                                let th = tr.height.saturating_sub(2) as usize;
+                                let max_scroll = total.saturating_sub(th);
+                                g.transcript_follow_tail = true;
+                                g.scroll_lines = max_scroll;
+                            }
+                        }
                     }
                     (KeyCode::Left, _) => {
                         g.cursor_char_idx = g.cursor_char_idx.saturating_sub(1);
@@ -603,6 +884,7 @@ pub fn run_blocking(
                         if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
                             g.slash_menu_index = g.slash_menu_index.saturating_sub(1);
                         } else {
+                            g.transcript_follow_tail = false;
                             g.scroll_lines = g.scroll_lines.saturating_sub(1);
                         }
                     }
@@ -622,6 +904,9 @@ pub fn run_blocking(
                                 let th = tr.height.saturating_sub(2) as usize;
                                 let max_scroll = total.saturating_sub(th);
                                 g.scroll_lines = (g.scroll_lines + 1).min(max_scroll);
+                                if g.scroll_lines >= max_scroll {
+                                    g.transcript_follow_tail = true;
+                                }
                             }
                         }
                     }

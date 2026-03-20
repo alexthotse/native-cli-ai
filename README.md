@@ -39,6 +39,7 @@ If you want a **web dashboard**, multi-agent supervision, or a **desktop control
 We are leaning further into the CLI instead of backing away from it: stronger harness defaults, fail-loud provider behavior, a richer tool surface, and stable event schemas for people building wrappers around `nca`.
 
 - Session lifecycle, events, and approvals all use the same runtime IPC (`attach`, approvals, shutdown).
+- Interactive clarification uses the `ask_question` tool: structured options, optional custom text, always a model `suggested_answer`, plus `/auto-answer` in the REPL/TUI to accept the suggestion.
 - Child sessions get **git worktrees** and explicit lineage so parallel agents do not step on each other.
 
 If you are building a control plane, the intended split is straightforward: let `nca` stay the **lean worker process**, and let tools like Paperclip or Enterprise Orchestration handle dashboards, persistence, and fleet-level coordination.

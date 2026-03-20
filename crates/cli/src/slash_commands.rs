@@ -30,4 +30,5 @@ pub const SLASH_COMMANDS: &[&str] = &[
     "/diff",
     "/cost",
     "/stats",
+    "/auto-answer",
 ];

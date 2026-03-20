@@ -487,6 +487,7 @@ async fn try_main() -> anyhow::Result<()> {
                             runtime.event_log_path(),
                             ipc_handle,
                             approval_pending,
+                            runtime.question_pending(),
                             None,
                         );
                         let _ = runtime.run_turn(prompt).await;
@@ -554,6 +555,7 @@ async fn try_main() -> anyhow::Result<()> {
                             runtime.event_log_path(),
                             ipc_handle,
                             approval_pending,
+                            runtime.question_pending(),
                             None,
                         );
                     }
@@ -601,6 +603,7 @@ async fn run_one_shot(
             runtime.event_log_path(),
             ipc_handle,
             approval_pending,
+            runtime.question_pending(),
             None,
         );
 
@@ -867,6 +870,7 @@ async fn resume_session(
                 runtime.event_log_path(),
                 ipc_handle,
                 approval_pending,
+                runtime.question_pending(),
                 None,
             );
         }
@@ -888,6 +892,7 @@ async fn resume_session(
                 runtime.event_log_path(),
                 ipc_handle,
                 approval_pending,
+                runtime.question_pending(),
                 None,
             );
         }

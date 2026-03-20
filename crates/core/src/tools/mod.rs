@@ -1,4 +1,5 @@
 pub mod apply_patch;
+pub mod ask_question;
 pub mod bash;
 pub mod code_intel_tool;
 pub mod copy_path;
@@ -18,6 +19,8 @@ pub mod spawn_subagent;
 pub mod types;
 pub mod web_search;
 pub mod write_file;
+
+pub use ask_question::AskQuestionTool;
 
 use nca_common::config::WebConfig;
 use nca_common::tool::{ToolCall, ToolDefinition, ToolResult};

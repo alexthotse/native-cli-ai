@@ -59,6 +59,7 @@ impl ApprovalPolicy {
                 | "query_symbols"
                 | "web_search"
                 | "fetch_url"
+                | "ask_question"
         );
         let file_edit = matches!(
             tool_name,

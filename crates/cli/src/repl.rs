@@ -1,9 +1,9 @@
 use crate::prompt::NcaPrompt;
-use crate::runner::SessionRuntime;
+use crate::runner::{dispatch_question_answer, SessionRuntime};
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::{run_blocking, spawn_tui_bridge, DisplayBlock, TuiCmd, TuiSessionState};
 use nca_common::config::PermissionMode;
-use nca_common::event::EndReason;
+use nca_common::event::{EndReason, QuestionSelection};
 use nca_core::skills::SkillCatalog;
 use nca_runtime::memory_store::MemoryStore;
 use reedline::{Completer, Suggestion, Emacs, Vi, Reedline, Signal, FileBackedHistory};
@@ -504,6 +504,7 @@ impl Repl {
                        /diff                      Show recent file changes\n\
                        /cost                      Show token usage and cost\n\
                        /stats                     Show session statistics\n\
+                       /auto-answer               Accept suggested answer for pending ask_question\n\
                        /skills                    List discovered skills\n\
                        /memory [text]             Show or store workspace memory\n\
                        /models                    Show available models\n\
@@ -855,6 +856,28 @@ impl Repl {
                     ));
                 }
             }
+            "/auto-answer" => {
+                let from_tui = if let ReplOutput::Tui(st) = &out {
+                    st.lock()
+                        .ok()
+                        .and_then(|g| g.active_question.as_ref().map(|q| q.question_id.clone()))
+                } else {
+                    None
+                };
+                let ok = if let Some(qid) = from_tui {
+                    self.runtime
+                        .submit_question_answer(&qid, QuestionSelection::Suggested)
+                } else {
+                    self.runtime.submit_suggested_answer()
+                };
+                if ok {
+                    out.println("accepted suggested answer for pending question");
+                } else {
+                    out.eprintln(
+                        "no pending interactive question to auto-answer (use when ask_question is waiting)",
+                    );
+                }
+            }
             "/sessions" => match self.runtime.list_session_ids().await {
                 Ok(mut ids) => {
                     ids.sort();
@@ -966,12 +989,35 @@ impl Repl {
         let log_path = self.runtime.event_log_path();
         let ipc = self.runtime.take_ipc_handle();
         let approval = self.runtime.take_ipc_approval_pending();
-        let _bridge = spawn_tui_bridge(rx, log_path, ipc, approval, tui_state.clone());
+        let question = self.runtime.question_pending();
+        let _bridge = spawn_tui_bridge(
+            rx,
+            log_path,
+            ipc,
+            approval,
+            question.clone(),
+            tui_state.clone(),
+        );
+
+        // Answers must bypass the main `cmd_rx` loop: while `run_turn` is blocked inside
+        // `ask_question`, that task never receives `TuiCmd::Submit` or `QuestionAnswer`.
+        let (answer_tx, mut answer_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, QuestionSelection)>();
+        let qp_dispatch = question.clone();
+        tokio::spawn(async move {
+            while let Some((qid, sel)) = answer_rx.recv().await {
+                let _ = dispatch_question_answer(&qp_dispatch, &qid, sel);
+            }
+        });
+        let answer_for_tui = answer_tx.clone();
+        drop(answer_tx);
 
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TuiCmd>();
         let st = tui_state.clone();
         let banner = self.run_mode;
-        let ui = tokio::task::spawn_blocking(move || run_blocking(st, cmd_tx, banner));
+        let ui = tokio::task::spawn_blocking(move || {
+            run_blocking(st, cmd_tx, Some(answer_for_tui), banner)
+        });
 
         loop {
             let cmd = cmd_rx.recv().await;
@@ -999,6 +1045,28 @@ impl Repl {
                 }
                 TuiCmd::CancelTurn => {
                     self.runtime.request_cancel();
+                }
+                TuiCmd::QuestionAnswer(selection) => {
+                    let qid = if let Ok(g) = tui_state.lock() {
+                        g.active_question
+                            .as_ref()
+                            .map(|q| q.question_id.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(qid) = qid {
+                        if !self
+                            .runtime
+                            .submit_question_answer(&qid, selection)
+                        {
+                            if let Ok(mut g) = tui_state.lock() {
+                                g.push_error(
+                                    "failed to submit answer (expired or already answered)"
+                                        .into(),
+                                );
+                            }
+                        }
+                    }
                 }
                 TuiCmd::Submit(line) => {
                     let line = line.trim().to_string();

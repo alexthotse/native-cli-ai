@@ -1,7 +1,7 @@
 //! Event fanout: session log, IPC, and TUI state (no stdout streaming).
 
 use crate::tui::state::TuiSessionState;
-use nca_common::event::{AgentEvent, EventEnvelope};
+use nca_common::event::{AgentEvent, EventEnvelope, QuestionSelection};
 use nca_runtime::ipc::IpcHandle;
 use nca_runtime::supervisor;
 use std::collections::HashMap;
@@ -19,6 +19,7 @@ pub fn spawn_tui_bridge(
     log_path: std::path::PathBuf,
     ipc_handle: Option<IpcHandle>,
     approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
+    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
     state: Arc<Mutex<TuiSessionState>>,
 ) -> tokio::task::JoinHandle<()> {
     let (event_tx_ipc, command_rx) = match ipc_handle {
@@ -30,7 +31,7 @@ pub fn spawn_tui_bridge(
     };
 
     if let Some(crx) = command_rx {
-        supervisor::spawn_command_consumer(crx, approval_pending, None);
+        supervisor::spawn_command_consumer(crx, approval_pending, question_pending, None);
     }
 
     let ipc = event_tx_ipc.map(|tx| IpcFanout { tx });
