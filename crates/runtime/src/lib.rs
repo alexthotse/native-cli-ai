@@ -1,5 +1,6 @@
 pub mod bash_tool;
 pub mod ipc;
+pub mod last_session;
 pub mod memory_store;
 pub mod process;
 pub mod pty;

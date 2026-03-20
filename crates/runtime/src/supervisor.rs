@@ -1,4 +1,5 @@
 use crate::ipc::{IpcHandle, IpcServer};
+use crate::last_session::LastSessionStore;
 use crate::memory_store::{MemoryNote, MemoryStore};
 use crate::pty::PtyManager;
 use crate::session_store::SessionStore;
@@ -241,6 +242,9 @@ impl Supervisor {
             hooks: hook_runner,
         };
         sup.save().await.map_err(|e| ProviderError::Other(e))?;
+        sup.update_last_session()
+            .await
+            .map_err(|e| ProviderError::Other(e))?;
         sup.run_session_hook(HookEventKind::SessionStart, json!(sup.snapshot()))
             .await;
         Ok(sup)
@@ -321,6 +325,9 @@ impl Supervisor {
         let output = self.agent.run_turn(prompt).await?;
         self.refresh_session_summary();
         self.save().await.map_err(|e| ProviderError::Other(e))?;
+        self.update_last_session()
+            .await
+            .map_err(|e| ProviderError::Other(e))?;
         Ok(output)
     }
 
@@ -352,6 +359,8 @@ impl Supervisor {
         )
         .await;
         let _ = self.save().await;
+        // Always update last session on finish so stale pointers are avoided.
+        let _ = self.update_last_session().await;
     }
 
     pub async fn save(&self) -> Result<(), String> {
@@ -360,6 +369,15 @@ impl Supervisor {
             .save(&session)
             .await
             .map_err(|e| e.to_string())
+    }
+
+    /// Mark this session as the last active session for the workspace.
+    /// Called on create, resume, run_turn, and finish to keep the pointer fresh.
+    pub async fn update_last_session(&self) -> Result<(), String> {
+        let store = LastSessionStore::new(
+            self.workspace_root.join(&self.config.session.last_session_file),
+        );
+        store.save(&self.session_id).await.map_err(|e| e.to_string())
     }
 
     fn current_session_state(&self, updated_at: chrono::DateTime<Utc>) -> SessionState {
@@ -1099,6 +1117,36 @@ fn is_pid_alive(pid: u32) -> bool {
     {
         let _ = pid;
         false
+    }
+}
+
+/// Get the last session ID from `.nca/.last_session`, if it exists and is valid.
+pub async fn get_last_session_id(
+    config: &NcaConfig,
+    workspace_root: &Path,
+) -> anyhow::Result<Option<String>> {
+    let store = LastSessionStore::new(
+        workspace_root.join(&config.session.last_session_file),
+    );
+    match store.load().await {
+        Ok(Some(id)) => {
+            // Verify the session still exists on disk.
+            let session_store =
+                SessionStore::new(workspace_root.join(&config.session.history_dir));
+            match session_store.load(&id).await {
+                Ok(_) => Ok(Some(id)),
+                Err(_) => {
+                    // Session file missing or corrupted; clear the stale pointer.
+                    let _ = store.clear().await;
+                    Ok(None)
+                }
+            }
+        }
+        Ok(None) => Ok(None),
+        Err(e) => {
+            tracing::warn!("failed to load last session pointer: {}", e);
+            Ok(None)
+        }
     }
 }
 

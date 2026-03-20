@@ -1968,6 +1968,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nca-autoresearch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "nca-common",
+ "parking_lot",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "nca-cli"
 version = "0.1.0"
 dependencies = [

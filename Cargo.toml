@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/runtime",
     "crates/cli",
+    "crates/autoresearch",
 ]
 
 [workspace.package]
@@ -39,7 +40,8 @@ anyhow = "1"
 # External crates
 cli-prompts = "0.1"
 
-# Common crate (internal)
+# Internal crates
 nca-common = { path = "crates/common" }
 nca-core = { path = "crates/core" }
 nca-runtime = { path = "crates/runtime" }
+nca-autoresearch = { path = "crates/autoresearch" }

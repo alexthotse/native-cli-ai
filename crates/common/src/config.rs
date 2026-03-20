@@ -756,18 +756,22 @@ impl Default for PermissionMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     pub history_dir: PathBuf,
+    #[serde(alias = "max_turn_per_run")]
     pub max_turns_per_run: u32,
     pub max_tool_calls_per_turn: u32,
     pub checkpoint_interval: u32,
+    /// File that stores the last active session ID for auto-resume.
+    pub last_session_file: PathBuf,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             history_dir: PathBuf::from(".nca/sessions"),
-            max_turns_per_run: 16,
+            max_turns_per_run: 128,
             max_tool_calls_per_turn: 200,
             checkpoint_interval: 5,
+            last_session_file: PathBuf::from(".nca/.last_session"),
         }
     }
 }
@@ -991,6 +995,9 @@ impl SessionConfig {
         if let Some(checkpoint_interval) = partial.checkpoint_interval {
             self.checkpoint_interval = checkpoint_interval;
         }
+        if let Some(last_session_file) = partial.last_session_file {
+            self.last_session_file = last_session_file;
+        }
     }
 }
 
@@ -1074,9 +1081,11 @@ struct PartialPermissionConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 struct PartialSessionConfig {
     history_dir: Option<PathBuf>,
+    #[serde(alias = "max_turn_per_run")]
     max_turns_per_run: Option<u32>,
     max_tool_calls_per_turn: Option<u32>,
     checkpoint_interval: Option<u32>,
+    last_session_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1158,6 +1167,17 @@ fn default_skill_directories() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_accepts_max_turn_per_run_typo_alias() {
+        let raw = r#"
+            [session]
+            max_turn_per_run = 99
+        "#;
+        let partial: PartialNcaConfig = toml::from_str(raw).expect("parse");
+        let session = partial.session.expect("session table");
+        assert_eq!(session.max_turns_per_run, Some(99));
+    }
 
     #[test]
     fn apply_model_override_updates_selected_provider_model() {

@@ -45,6 +45,10 @@ struct Cli {
     #[arg(short, long)]
     resume: bool,
 
+    /// Start a new session instead of resuming the last one
+    #[arg(long)]
+    no_resume: bool,
+
     /// Start interactive run mode (Claude-style)
     #[arg(long)]
     run: bool,
@@ -84,6 +88,10 @@ struct Cli {
     /// Permission handling mode (default: from config, fallback to `default`)
     #[arg(long, value_enum)]
     permission_mode: Option<CliPermissionMode>,
+
+    /// Max turns per run (overrides config)
+    #[arg(long)]
+    max_turns: Option<u32>,
 
     /// Internal session identifier for spawned runs
     #[arg(long, hide = true)]
@@ -316,6 +324,9 @@ async fn try_main() -> anyhow::Result<()> {
         config.model.enable_thinking = true;
         config.model.thinking_budget = cli.thinking_budget;
     }
+    if let Some(max_turns) = cli.max_turns {
+        config.session.max_turns_per_run = max_turns;
+    }
 
     let workspace_root = PathBuf::from(".");
     match cli.command {
@@ -537,7 +548,8 @@ async fn try_main() -> anyhow::Result<()> {
                     cli.no_tui,
                 )
                 .await?;
-            } else {
+            } else if cli.no_resume {
+                // Explicitly skip auto-resume; create a fresh session.
                 if cli.run {
                     eprintln!("[run-mode] interactive run profile enabled");
                 }
@@ -586,6 +598,77 @@ async fn try_main() -> anyhow::Result<()> {
                     repl.run_with_tui().await?;
                 } else {
                     repl.run().await?;
+                }
+            } else {
+                // Auto-resume: if a last-session pointer exists and points to a valid session,
+                // resume it silently instead of creating a new session.
+                if let Ok(Some(session_id)) =
+                    nca_runtime::supervisor::get_last_session_id(&config, &workspace_root).await
+                {
+                    eprintln!(
+                        "[session] Resuming last session {} (use --no-resume to start fresh)",
+                        session_id
+                    );
+                    resume_session(
+                        config,
+                        &workspace_root,
+                        &session_id,
+                        None,
+                        cli.safe,
+                        cli.stream,
+                        cli.no_tui,
+                    )
+                    .await?;
+                } else {
+                    if cli.run {
+                        eprintln!("[run-mode] interactive run profile enabled");
+                    }
+                    if let Some(mode) = cli.permission_mode {
+                        config.permissions.mode = mode.into();
+                    }
+                    let use_tui = !cli.no_tui
+                        && stdout().is_terminal()
+                        && stdin().is_terminal()
+                        && matches!(cli.stream, StreamMode::Human);
+                    let approval_handler: Option<
+                        std::sync::Arc<dyn nca_core::approval::ApprovalHandler>,
+                    > = if use_tui {
+                        None
+                    } else {
+                        Some(InteractiveIpcApprovalHandler::new())
+                    };
+                    let mut runtime = build_session_runtime(
+                        config.clone(),
+                        &workspace_root,
+                        cli.safe,
+                        true,
+                        cli.session_id,
+                        approval_handler,
+                        orchestration_context.clone(),
+                    )
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                    if !use_tui {
+                        if let Some(rx) = runtime.take_event_rx() {
+                            let ipc_handle = runtime.take_ipc_handle();
+                            let approval_pending = runtime.take_ipc_approval_pending();
+                            let _stream_task = spawn_stream_task(
+                                rx,
+                                cli.stream,
+                                runtime.event_log_path(),
+                                ipc_handle,
+                                approval_pending,
+                                runtime.question_pending(),
+                                None,
+                            );
+                        }
+                    }
+                    let mut repl = Repl::new(runtime, cli.safe, cli.run);
+                    if use_tui {
+                        repl.run_with_tui().await?;
+                    } else {
+                        repl.run().await?;
+                    }
                 }
             }
         }
