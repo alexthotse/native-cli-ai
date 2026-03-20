@@ -2,7 +2,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::orchestration::{DesktopMode, OrchestrationSnapshot};
 use crate::tool::ToolResult;
 
 /// Envelope for events written to disk, with stable id and timestamp for ordering.
@@ -25,7 +24,7 @@ impl EventEnvelope {
     }
 }
 
-/// Events emitted by the agent runtime, broadcast over IPC to CLI and monitor.
+/// Events emitted by the agent runtime, broadcast over IPC to the CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AgentEvent {
@@ -90,22 +89,6 @@ pub enum AgentEvent {
         child_session_id: String,
         status: String,
     },
-    TodoStatusChanged {
-        todo_id: String,
-        status: String,
-    },
-    TodoAssigned {
-        todo_id: String,
-        agent_id: Option<String>,
-    },
-    RunLinked {
-        todo_id: String,
-        agent_id: Option<String>,
-        session_id: String,
-    },
-    DesktopModeChanged {
-        mode: DesktopMode,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,7 +99,7 @@ pub enum EndReason {
     Cancelled,
 }
 
-/// Commands sent from CLI or monitor to the agent runtime.
+/// Commands sent over IPC to the agent runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AgentCommand {
@@ -131,29 +114,9 @@ pub enum AgentCommand {
     },
     Cancel,
     Shutdown,
-    /// Desktop: request the runtime to start a new session in a workspace.
-    StartSession {
-        workspace: PathBuf,
-        prompt: String,
-        model: Option<String>,
-        safe_mode: bool,
-    },
-    /// Desktop: resume an existing session with an optional follow-up prompt.
-    ResumeSession {
-        session_id: String,
-        prompt: Option<String>,
-    },
-    /// Desktop: query current session state snapshot.
-    QueryState {
-        session_id: String,
-    },
-    /// Desktop: list all sessions in a workspace.
-    ListSessions {
-        workspace: PathBuf,
-    },
 }
 
-/// Responses to query commands, sent back over IPC.
+/// Responses to query-style IPC messages, sent back as `AgentEvent::Response`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AgentResponse {
@@ -162,9 +125,6 @@ pub enum AgentResponse {
     },
     SessionList {
         sessions: Vec<crate::session::SessionMeta>,
-    },
-    OrchestrationSnapshot {
-        snapshot: OrchestrationSnapshot,
     },
     Error {
         message: String,

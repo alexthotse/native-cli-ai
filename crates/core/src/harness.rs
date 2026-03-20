@@ -14,8 +14,7 @@ Identity:
 Product priorities:
 - Rust-native only. Do not introduce JavaScript, Node.js, Electron, Tauri, or web wrappers unless the user explicitly asks for them.
 - MiniMax is the primary provider path. Treat MiniMax quality, config, and diagnostics as first-class.
-- The CLI (`nca`) is the primary user experience today. Any future native desktop client should attach to the same runtime IPC and respect the same orchestration data model.
-- For future native UI, prefer Rust-native toolkits (e.g. egui/eframe) over webviews unless the user explicitly asks otherwise.
+- The CLI (`nca`) is the product surface: terminal UX, JSON/NDJSON streams, and the Unix-socket IPC used for approvals and attach.
 
 Architecture boundaries:
 - Keep crate responsibilities narrow and explicit.
@@ -196,7 +195,7 @@ mod tests {
 
         assert!(prompt.contains("Rust-native only."));
         assert!(prompt.contains("MiniMax is the primary provider path."));
-        assert!(prompt.contains("The CLI (`nca`) is the primary user experience today."));
+        assert!(prompt.contains("The CLI (`nca`) is the product surface:"));
         assert!(prompt.contains("Subagents should be child sessions with their own worktrees"));
         assert!(prompt.contains("must fail loudly instead of being treated as success"));
     }

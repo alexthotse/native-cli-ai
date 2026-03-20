@@ -94,7 +94,7 @@ impl IpcHandle {
     }
 }
 
-/// IPC client used by the monitor app to connect to a running session.
+/// IPC client for connecting to a running session socket (events, approvals, shutdown).
 pub struct IpcClient {
     socket_path: PathBuf,
 }

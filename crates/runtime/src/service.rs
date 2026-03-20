@@ -1,21 +1,13 @@
-use crate::session_store::SessionStore;
 use crate::supervisor::{
     SessionControlCommand, Supervisor, SupervisorConfig, spawn_command_consumer_with_store,
     spawn_subagent_consumer,
 };
 use nca_common::config::NcaConfig;
 use nca_common::event::{AgentEvent, EndReason, EventEnvelope};
-use nca_common::orchestration::{
-    AgentProfile, AgentProfileId, Company, DesktopMode, DesktopModePreference, LinkRunRequest,
-    NewAgentProfile, NewCompany, NewProject, NewTodo, OrchestrationSnapshot, Project,
-    RunLaunchContext, RunLink, Todo, TodoId, TodoStatus,
-};
 use nca_common::session::OrchestrationContext;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc as std_mpsc;
-
-use crate::orchestrator_store::OrchestratorStore;
 
 #[derive(Debug, Clone)]
 pub enum ServiceSessionKind {
@@ -30,7 +22,6 @@ pub struct ServiceSessionRequest {
     pub safe_mode: bool,
     pub initial_prompt: Option<String>,
     pub orchestration_context: Option<OrchestrationContext>,
-    pub launch_context: Option<RunLaunchContext>,
     pub kind: ServiceSessionKind,
 }
 
@@ -132,19 +123,6 @@ async fn run_service_session_with_startup(
         event_log_path: handle.event_log_path.clone(),
     };
 
-    if let Some(launch) = request.launch_context.clone() {
-        let _ = OrchestrationService::default().link_run(LinkRunRequest {
-            todo_id: launch.todo_id,
-            agent_id: launch.agent_id,
-            session_id: info.session_id.clone(),
-            workspace_root: info.workspace_root.clone(),
-            worktree_path: None,
-            branch: None,
-            parent_session_id: None,
-            status: nca_common::session::SessionStatus::Running,
-        });
-    }
-
     if let Some(tx) = startup_tx {
         let _ = tx.send(Ok(info.clone()));
     }
@@ -187,10 +165,6 @@ async fn run_service_session_with_startup(
             crx,
             approval_pending,
             None,
-            Some(SessionStore::new(
-                info.workspace_root
-                    .join(&request.config.session.history_dir),
-            )),
             supervisor.event_tx(),
             Some(prompt_tx.clone()),
             Some(control_tx.clone()),
@@ -261,13 +235,6 @@ async fn run_service_session_with_startup(
     }
 
     supervisor.finish(reason.clone()).await;
-    let final_status = match reason {
-        EndReason::Completed => nca_common::session::SessionStatus::Completed,
-        EndReason::Error => nca_common::session::SessionStatus::Error,
-        EndReason::Cancelled => nca_common::session::SessionStatus::Cancelled,
-        EndReason::UserExit => nca_common::session::SessionStatus::Cancelled,
-    };
-    let _ = OrchestrationService::default().touch_run_status(&info.session_id, final_status);
     fanout_task.abort();
     if let Some(task) = command_task {
         task.abort();
@@ -311,81 +278,4 @@ fn spawn_service_event_fanout(
             }
         }
     })
-}
-
-pub struct OrchestrationService {
-    store: OrchestratorStore,
-}
-
-impl OrchestrationService {
-    pub fn new(store: OrchestratorStore) -> Self {
-        Self { store }
-    }
-
-    pub fn default() -> Self {
-        Self::new(OrchestratorStore::default())
-    }
-
-    pub fn load_snapshot(&self) -> Result<OrchestrationSnapshot, String> {
-        self.store.load_snapshot()
-    }
-
-    pub fn load_mode(&self) -> Result<DesktopModePreference, String> {
-        self.store.load_mode()
-    }
-
-    pub fn save_mode(&self, mode: DesktopMode) -> Result<DesktopModePreference, String> {
-        self.store.save_mode(mode)
-    }
-
-    pub fn create_company(&self, input: NewCompany) -> Result<Company, String> {
-        self.store.create_company(input)
-    }
-
-    pub fn create_project(&self, input: NewProject) -> Result<Project, String> {
-        self.store.create_project(input)
-    }
-
-    pub fn create_todo(&self, input: NewTodo) -> Result<Todo, String> {
-        self.store.create_todo(input)
-    }
-
-    pub fn create_agent_profile(&self, input: NewAgentProfile) -> Result<AgentProfile, String> {
-        self.store.create_agent_profile(input)
-    }
-
-    pub fn assign_todo(
-        &self,
-        todo_id: &TodoId,
-        agent_id: Option<&AgentProfileId>,
-    ) -> Result<(), String> {
-        self.store.assign_todo(todo_id, agent_id)
-    }
-
-    pub fn update_todo_status(&self, todo_id: &TodoId, status: TodoStatus) -> Result<(), String> {
-        self.store.update_todo_status(todo_id, status)
-    }
-
-    pub fn link_run(&self, request: LinkRunRequest) -> Result<RunLink, String> {
-        self.store.link_run(request)
-    }
-
-    pub fn touch_run_status(
-        &self,
-        session_id: &str,
-        status: nca_common::session::SessionStatus,
-    ) -> Result<(), String> {
-        self.store.touch_run_status(session_id, status)
-    }
-
-    pub fn update_run_link_git_fields(
-        &self,
-        session_id: &str,
-        worktree_path: Option<&std::path::PathBuf>,
-        branch: Option<&str>,
-        parent_session_id: Option<&str>,
-    ) -> Result<bool, String> {
-        self.store
-            .update_run_link_git_fields(session_id, worktree_path, branch, parent_session_id)
-    }
 }

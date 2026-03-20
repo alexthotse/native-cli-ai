@@ -19,7 +19,7 @@ These commands are the supported orchestration-facing surfaces:
 | `nca logs <session_id>` | Replay persisted event envelopes from disk | NDJSON `EventEnvelope` lines |
 | `nca cancel <session_id> --json` | Stop a session and persist cancelled state | JSON object |
 
-`nca serve` exists for the local monitor/runtime flow, but it is still treated as an internal command rather than part of the public orchestration contract.
+`nca serve` exists for long-lived IPC-driven sessions but is treated as an internal command rather than part of the public orchestration contract.
 
 ## Event Stream Shape
 

@@ -131,15 +131,7 @@ This document records every dependency choice, the rationale behind it, and the 
 
 ## Local Persistence
 
-| Crate | Version | Role |
-|-------|---------|------|
-| `rusqlite` | 0.38.x | SQLite-backed orchestration store for companies, projects, todos, agents, and run links |
-
-**Why SQLite + rusqlite**: The desktop now needs relational local data for company/project/todo/agent orchestration without introducing a server or a hosted database. SQLite keeps setup zero-admin on macOS/Linux, while `rusqlite` is the simplest direct Rust integration for a local embedded control-plane store.
-
-**Hybrid model**: SQLite is the source of truth for orchestration entities and relationships. Session transcripts and event logs stay as JSON/JSONL artifacts in workspace-local `.nca/sessions/` folders.
-
-**Rejected for now**: Postgres (too much infrastructure for a local-first desktop), monitor-only JSON files (poor relational querying), fully remote control-plane storage (premature for the native desktop path).
+Session state and event streams are stored as JSON and JSONL under `<workspace>/.nca/sessions/` (see `runtime::session_store`). Global user config lives under `~/.nca/config.toml`. No separate SQLite control-plane database is used in this workspace.
 
 ---
 
@@ -194,12 +186,6 @@ This document records every dependency choice, the rationale behind it, and the 
 |-------|---------|------|
 | `tracing` | 0.1.x | Structured, async-aware instrumentation |
 | `tracing-subscriber` | 0.3.x | Log formatting and filtering |
-
----
-
-## Native desktop UI (not in workspace)
-
-The previous `nca-monitor` (egui/eframe) crate has been **removed** so the product can be re-scoped. When a new desktop client is defined, `docs/tech-stack.md` should record the chosen UI stack here (egui remains a strong candidate: pure Rust, no webview).
 
 ---
 

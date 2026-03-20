@@ -12,13 +12,11 @@ alwaysApply: false
 - `core` depends on `common` only. It owns the agent loop, provider abstraction, tool registry, and approval policy.
 - `runtime` depends on `common` and `core`. It owns PTY management, sandboxed process execution, IPC, session persistence, and tmux integration.
 - `cli` depends on `common`, `core`, and `runtime`. It owns the TUI, REPL, rendering, and user input.
-- **No `monitor` crate in the workspace today.** If a native desktop client is added again, prefer `common` + `runtime` only (IPC client), not `core` or `cli`.
 
 ## No JavaScript
 
 - Never introduce a dependency that requires Node.js, npm, or a JavaScript runtime.
 - Never use a webview-based framework (Tauri, Dioxus Desktop, Electron) in any crate.
-- Any future native desktop client should use a Rust-native toolkit (e.g. `egui` / `eframe`), not a webview.
 
 ## Async Convention
 

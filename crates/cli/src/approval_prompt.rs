@@ -44,8 +44,8 @@ impl ApprovalHandler for StdioApprovalHandler {
     }
 }
 
-/// Approval handler that receives ApproveToolCall/DenyToolCall from IPC (monitor).
-/// Used when the runtime has an IPC server so the monitor can approve/deny.
+/// Approval handler that receives ApproveToolCall/DenyToolCall over the session IPC socket.
+/// Used when the runtime exposes IPC so another process (e.g. `nca attach`) can approve/deny.
 pub struct IpcApprovalHandler {
     pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
 }

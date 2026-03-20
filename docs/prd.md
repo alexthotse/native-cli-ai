@@ -2,7 +2,7 @@
 
 ## Product Vision
 
-A native-first, Rust-powered AI coding assistant that runs entirely in the terminal with zero JavaScript dependencies. It provides an interactive agent loop for code generation, file editing, command execution, and project understanding—comparable in capability to Claude Code and OpenAI Codex CLI—with sub-100ms startup, low memory footprint, and machine-readable streams for orchestration. A **separate native desktop client is not in the repo today**; it may be reintroduced later using the same runtime IPC.
+A native-first, Rust-powered AI coding assistant that runs entirely in the terminal with zero JavaScript dependencies. It provides an interactive agent loop for code generation, file editing, command execution, and project understanding—comparable in capability to Claude Code and OpenAI Codex CLI—with sub-100ms startup, low memory footprint, and machine-readable streams for orchestration and automation.
 
 The product name is **nca** (native-cli-ai) throughout this document.
 
@@ -19,8 +19,8 @@ The product name is **nca** (native-cli-ai) throughout this document.
 
 ### Secondary: Team Lead / Reviewer
 
-- Wants to monitor multiple agent sessions running across worktrees (today: `nca sessions`, logs, attach, JSON output).
-- Needs visibility into what the AI is doing, approvals, and diffs—CLI + scripting until a new desktop scope exists.
+- Wants to observe multiple agent sessions across worktrees via `nca sessions`, logs, attach, and JSON output.
+- Needs visibility into what the AI is doing, approvals, and diffs—CLI plus scripting and subprocess integration.
 
 ### Tertiary: CI / Automation User
 
@@ -68,11 +68,7 @@ System behavior is guided by a layered harness prompt:
 
 Sessions are persisted to disk. `nca --resume` picks up the last session with full conversation context.
 
-### 5. Future native desktop client (TBD)
-
-Not shipped in this repository. Any future app should connect over the **same Unix-socket IPC** as `nca attach` / `nca serve`, showing live events, tool history, diffs, usage, and approvals—scope to be rewritten from scratch.
-
-### 6. Tmux / Multiplexer Integration
+### 5. Tmux / Multiplexer Integration
 
 `nca` can attach to or create tmux sessions, enabling long-running background agents that the user reconnects to later.
 
@@ -101,7 +97,7 @@ Not shipped in this repository. Any future app should connect over the **same Un
 - Markdown-rendered responses with syntax highlighting in the terminal
 - Token usage and cost tracking per session
 - Colored diffs for file changes
-- Local orchestration persistence for companies, projects, todos, agents, and linked runs (CLI-accessible; future desktop is out of repo)
+- Optional orchestration metadata via `NCA_ORCH_*` environment variables (injected into session state and harness)
 
 ### Out of Scope for MVP
 
@@ -126,7 +122,7 @@ Not shipped in this repository. Any future app should connect over the **same Un
 ## Constraints
 
 - **Single binary**: The CLI ships as one statically-linked (where possible) Rust binary.
-- **No JS/webview in the default path**: The CLI and core library must never require a JavaScript runtime. Any future desktop client should stay Rust-native (e.g. egui) unless explicitly decided otherwise.
+- **No JS/webview in the default path**: The CLI and core library must never require a JavaScript runtime.
 - **Workspace sandbox**: By default, file writes and shell commands are restricted to the current workspace root. Escaping requires explicit config.
 - **Async-first**: All I/O (network, filesystem, PTY) goes through tokio. No blocking the main thread.
 - **Offline-tolerant config**: Config, sessions, and custom instructions work without network access. Only LLM calls require connectivity.

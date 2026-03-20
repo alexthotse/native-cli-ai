@@ -97,32 +97,28 @@ flowchart TD
   Cli --> Runtime
 ```
 
-The CLI delegates session lifecycle to the runtime `Supervisor`. **There is no `nca-monitor` crate in this workspace today**; a future native client would typically depend on `common` + `runtime` (for `IpcClient`, `WorktreeManager`, workspace registry) and avoid importing `core` or `cli`.
+The CLI delegates session lifecycle to the runtime `Supervisor`.
 
 ## CLI-first architecture
 
-The terminal app (`nca`) is the primary interface. Orchestration metadata and sessions remain local-first; use `nca` + JSON flags for automation until a new desktop scope exists.
+The terminal app (`nca`) is the primary interface. Session state and optional `NCA_ORCH_*` metadata stay local-first; use `nca` with JSON/NDJSON flags for automation.
 
 ```mermaid
 flowchart LR
-  Cli[nca CLI] --> WorkspaceRegistry
-  Cli --> OrchestratorDb["~/.nca/orchestrator.db"]
+  Cli[nca CLI] --> Config["~/.nca/config.toml"]
   Cli --> RuntimeService[Supervisor]
   RuntimeService --> AgentRuns[AgentLoop]
-  RuntimeService --> EventStore[EventEnvelope logs]
-  RuntimeService --> OrchestratorStore[SQLite orchestration store]
+  RuntimeService --> EventStore["EventEnvelope logs"]
+  RuntimeService --> SessionFiles[".nca/sessions"]
   RuntimeService --> WorktreeManager
-  WorkspaceRegistry --> LocalMetadata["~/.nca/workspaces.json"]
 ```
 
 ### Key modules
 
 - **`runtime::supervisor`**: Session lifecycle manager used by the CLI (`nca serve`, attach, spawn, etc.).
-- **`runtime::workspace_registry`**: Persisted workspace index at `~/.nca/workspaces.json`.
-- **`runtime::orchestrator_store`**: SQLite-backed local store for companies, projects, todos, agents, mode preference, and run links.
+- **`runtime::session_store`**: Persist and load session JSON under `<workspace>/.nca/sessions/`.
 - **`runtime::worktree`**: Isolated git worktree creation, cleanup, and merge per agent run.
 - **`runtime::bash_tool`**: PTY-backed bash execution, registered by the supervisor.
-- **`OrchestrationService::update_run_link_git_fields`**: Syncs `worktree_path` / `branch` / `parent_session_id` on `run_links` when session JSON contains them.
 
 ---
 
@@ -191,7 +187,7 @@ The runtime exposes a Unix domain socket at `$XDG_RUNTIME_DIR/nca/<session-id>.s
 ### Protocol
 
 - **Transport**: Unix stream socket, newline-delimited JSON.
-- **Direction**: The runtime is the server. The CLI (and any future UI client) connects as a client.
+- **Direction**: The runtime is the server. The CLI (e.g. `nca attach`) connects as a client.
 - **Messages**: Every `AgentEvent` from `common::event` is wrapped in `EventEnvelope` and serialized to all connected clients. Persisted logs and live IPC use the same machine-readable shape.
 
 ```mermaid
@@ -201,8 +197,6 @@ flowchart LR
   RuntimeServer -->|"broadcast events"| CliProcess
   CliProcess -->|"send commands"| RuntimeServer
 ```
-
-Future native clients would use the same socket protocol (`IpcClient` in `runtime::ipc`).
 
 ### Event Schema (common::event)
 
@@ -269,7 +263,7 @@ The CLI now exposes multiple session surfaces on top of the same engine:
 
 - `run` for explicit one-shot execution
 - `--run` for Claude-style interactive run mode
-- `serve` for long-lived IPC-controlled sessions (used by the desktop app)
+- `serve` for long-lived IPC-controlled sessions
 - `spawn` for background execution
 - `sessions` for saved-session listing
 - `resume` for continuing a saved session
@@ -330,9 +324,8 @@ Sessions are stored as JSON files in `.nca/sessions/<session-id>.json`:
 }
 ```
 
-The desktop orchestration layer uses a hybrid persistence model:
+Persistence is workspace-local:
 
-- `~/.nca/orchestrator.db` stores companies, projects, todos, agent profiles, run links, and desktop mode preference.
 - `<workspace>/.nca/sessions/*.json` stores session snapshots and conversation state.
 - `<workspace>/.nca/sessions/*.events.jsonl` stores append-only event streams for replay and live attach.
 

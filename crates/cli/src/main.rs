@@ -118,7 +118,7 @@ enum Command {
         model: Option<String>,
         #[arg(long)]
         safe: bool,
-        // Serve (IPC-driven) defaults to accept-edits since the monitor handles UX
+        // Serve (IPC-driven) defaults to accept-edits for non-interactive service sessions
         #[arg(long, value_enum, default_value_t = CliPermissionMode::AcceptEdits)]
         permission_mode: CliPermissionMode,
         #[arg(long, hide = true)]
@@ -670,7 +670,6 @@ async fn run_service_session(
         safe_mode: safe,
         initial_prompt,
         orchestration_context,
-        launch_context: None,
         kind: nca_runtime::service::ServiceSessionKind::New { session_id },
     })
     .await
