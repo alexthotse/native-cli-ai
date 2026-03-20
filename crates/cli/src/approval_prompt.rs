@@ -1,3 +1,4 @@
+use crate::approval_prompts::{format_json_pretty, truncate};
 use nca_common::tool::ToolCall;
 use nca_core::approval::ApprovalHandler;
 use std::collections::HashMap;
@@ -23,10 +24,11 @@ impl ApprovalHandler for StdioApprovalHandler {
         let mut stderr = io::stderr();
         let stdin = io::stdin();
         let mut reader = BufReader::new(stdin);
+        let input_preview = truncate(&format_json_pretty(&call.input), 200);
 
         let prompt = format!(
-            "\n[approval] {description}\nTool: {}\nInput: {}\nApprove? [y/N]: ",
-            call.name, call.input
+            "\n[approval] {description}\nTool: {}\nInput preview:\n{}\nApprove? [y/N]: ",
+            call.name, input_preview
         );
         if stderr.write_all(prompt.as_bytes()).await.is_err() {
             return false;

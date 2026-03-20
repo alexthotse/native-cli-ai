@@ -14,10 +14,10 @@ use nca_core::harness::build_system_prompt;
 use nca_core::hooks::{HookEventKind, HookRunner};
 use nca_core::provider::ProviderError;
 use nca_core::provider::factory::build_provider;
+use nca_core::tools::AskQuestionTool;
 use nca_core::tools::ToolRegistry;
 use nca_core::tools::mcp::load_mcp_tools;
 use nca_core::tools::spawn_subagent::{SpawnRequest, SpawnSubagentTool};
-use nca_core::tools::AskQuestionTool;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -254,6 +254,7 @@ impl Supervisor {
         safe_mode: bool,
         interactive_approvals: bool,
         session_id: &str,
+        approval_handler: Option<Arc<dyn ApprovalHandler>>,
     ) -> Result<Self, ProviderError> {
         let mut sup = Self::create(SupervisorConfig {
             config: config.clone(),
@@ -261,7 +262,7 @@ impl Supervisor {
             safe_mode,
             interactive_approvals,
             session_id: Some(session_id.into()),
-            approval_handler: None,
+            approval_handler,
             orchestration_context: None,
         })
         .await?;

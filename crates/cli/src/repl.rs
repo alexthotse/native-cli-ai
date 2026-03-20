@@ -1,12 +1,12 @@
 use crate::prompt::NcaPrompt;
-use crate::runner::{dispatch_question_answer, SessionRuntime};
+use crate::runner::{SessionRuntime, dispatch_question_answer, dispatch_tool_approval};
 use crate::slash_commands::SLASH_COMMANDS;
-use crate::tui::{run_blocking, spawn_tui_bridge, DisplayBlock, TuiCmd, TuiSessionState};
+use crate::tui::{DisplayBlock, TuiCmd, TuiSessionState, run_blocking, spawn_tui_bridge};
 use nca_common::config::PermissionMode;
 use nca_common::event::{EndReason, QuestionSelection};
 use nca_core::skills::SkillCatalog;
 use nca_runtime::memory_store::MemoryStore;
-use reedline::{Completer, Suggestion, Emacs, Vi, Reedline, Signal, FileBackedHistory};
+use reedline::{Completer, Emacs, FileBackedHistory, Reedline, Signal, Suggestion, Vi};
 use std::io::Write;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -44,8 +44,7 @@ impl ReplOutput<'_> {
             ReplOutput::Stdio => eprintln!("{s}"),
             ReplOutput::Tui(st) => {
                 if let Ok(mut g) = st.lock() {
-                    g.blocks
-                        .push(DisplayBlock::System(format!("[!] {s}")));
+                    g.blocks.push(DisplayBlock::System(format!("[!] {s}")));
                 }
             }
         }
@@ -154,13 +153,7 @@ impl AgentProfile {
     }
 
     /// All profiles in cycle order
-    pub const ALL: [Self; 5] = [
-        Self::Build,
-        Self::Plan,
-        Self::Review,
-        Self::Fix,
-        Self::Test,
-    ];
+    pub const ALL: [Self; 5] = [Self::Build, Self::Plan, Self::Review, Self::Fix, Self::Test];
 }
 
 impl std::fmt::Display for AgentProfile {
@@ -257,7 +250,9 @@ impl Repl {
                 }
                 Ok(Signal::CtrlC) => {
                     // Ctrl+C - cancel current or exit
-                    eprintln!("\n[cancel] Press Ctrl+D to exit, or wait for current operation to complete");
+                    eprintln!(
+                        "\n[cancel] Press Ctrl+D to exit, or wait for current operation to complete"
+                    );
                 }
                 Err(err) => {
                     eprintln!("read error: {err}");
@@ -366,7 +361,10 @@ impl Repl {
             )
         } else {
             // Escape special characters for grep
-            let escaped = query.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "\\");
+            let escaped = query.replace(
+                |c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_',
+                "\\",
+            );
             format!(
                 "find . -type f \\( -name '*{escaped}*' -o -path '*{escaped}*' \\) 2>/dev/null | head -20"
             )
@@ -515,6 +513,8 @@ impl Repl {
                        /config                    Show effective runtime config\n\
                        /doctor                    Run MiniMax config checks\n\
                        /sessions                  List local session IDs\n\
+                       /permissions [mode]        Show or set permission mode\n\
+                       /permission-bypass [on|off|toggle]  Quick bypass toggle (default: toggle)\n\
                        /exit                      Exit repl\n\n\
                      KEYBOARD SHORTCUTS:\n\
                        Tab                         Switch agent profile (@build -> @plan -> @review)\n\
@@ -690,7 +690,7 @@ impl Repl {
                         self.runtime.set_permission_mode(parsed_mode);
                         if let ReplOutput::Tui(st) = out {
                             if let Ok(mut g) = st.lock() {
-                                g.permission_mode = format!("{parsed_mode:?}");
+                                g.set_permission_mode(&format!("{parsed_mode:?}"));
                             }
                         }
                         out.println(&format!("permission mode set to {parsed_mode:?}"));
@@ -705,6 +705,33 @@ impl Repl {
                         self.runtime.permission_mode()
                     ));
                 }
+            }
+            "/permission-bypass" => {
+                let sub = parts.next().unwrap_or("").trim();
+                let target = match sub.to_ascii_lowercase().as_str() {
+                    "" | "toggle" => {
+                        if self.runtime.permission_mode() == PermissionMode::BypassPermissions {
+                            PermissionMode::Default
+                        } else {
+                            PermissionMode::BypassPermissions
+                        }
+                    }
+                    "on" | "enable" | "yes" | "1" => PermissionMode::BypassPermissions,
+                    "off" | "disable" | "no" | "0" => PermissionMode::Default,
+                    _ => {
+                        out.println(
+                            "usage: /permission-bypass [on|off|toggle] — default toggles bypass ↔ default",
+                        );
+                        return Ok(true);
+                    }
+                };
+                self.runtime.set_permission_mode(target);
+                if let ReplOutput::Tui(st) = out {
+                    if let Ok(mut g) = st.lock() {
+                        g.set_permission_mode(&format!("{target:?}"));
+                    }
+                }
+                out.println(&format!("permission mode set to {target:?}"));
             }
             "/skills" => {
                 let skills = SkillCatalog::discover(
@@ -994,7 +1021,7 @@ impl Repl {
             rx,
             log_path,
             ipc,
-            approval,
+            approval.clone(),
             question.clone(),
             tui_state.clone(),
         );
@@ -1012,11 +1039,35 @@ impl Repl {
         let answer_for_tui = answer_tx.clone();
         drop(answer_tx);
 
+        let (approval_tx, mut approval_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
+        let approval_dispatch = approval.clone();
+        let approval_state = tui_state.clone();
+        tokio::spawn(async move {
+            while let Some((call_id, approved)) = approval_rx.recv().await {
+                if !dispatch_tool_approval(&approval_dispatch, &call_id, approved) {
+                    if let Ok(mut g) = approval_state.lock() {
+                        g.push_error(
+                            "failed to resolve approval (expired or already handled)".into(),
+                        );
+                    }
+                }
+            }
+        });
+        let approval_for_tui = approval_tx.clone();
+        drop(approval_tx);
+
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TuiCmd>();
         let st = tui_state.clone();
         let banner = self.run_mode;
         let ui = tokio::task::spawn_blocking(move || {
-            run_blocking(st, cmd_tx, Some(answer_for_tui), banner)
+            run_blocking(
+                st,
+                cmd_tx,
+                Some(answer_for_tui),
+                Some(approval_for_tui),
+                banner,
+            )
         });
 
         loop {
@@ -1048,21 +1099,15 @@ impl Repl {
                 }
                 TuiCmd::QuestionAnswer(selection) => {
                     let qid = if let Ok(g) = tui_state.lock() {
-                        g.active_question
-                            .as_ref()
-                            .map(|q| q.question_id.clone())
+                        g.active_question.as_ref().map(|q| q.question_id.clone())
                     } else {
                         None
                     };
                     if let Some(qid) = qid {
-                        if !self
-                            .runtime
-                            .submit_question_answer(&qid, selection)
-                        {
+                        if !self.runtime.submit_question_answer(&qid, selection) {
                             if let Ok(mut g) = tui_state.lock() {
                                 g.push_error(
-                                    "failed to submit answer (expired or already answered)"
-                                        .into(),
+                                    "failed to submit answer (expired or already answered)".into(),
                                 );
                             }
                         }
@@ -1173,8 +1218,10 @@ impl Repl {
             "find . -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.toml' \\) 2>/dev/null | head -20"
                 .to_string()
         } else {
-            let escaped =
-                query.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "\\");
+            let escaped = query.replace(
+                |c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_',
+                "\\",
+            );
             format!(
                 "find . -type f \\( -name '*{escaped}*' -o -path '*{escaped}*' \\) 2>/dev/null | head -20"
             )
@@ -1230,7 +1277,9 @@ impl Completer for Repl {
         // Complete bash mode commands (starting with !)
         if line.starts_with('!') {
             // Common shell commands
-            let bash_commands = ["git", "ls", "cat", "find", "grep", "npm", "cargo", "make", "docker", "curl"];
+            let bash_commands = [
+                "git", "ls", "cat", "find", "grep", "npm", "cargo", "make", "docker", "curl",
+            ];
             let prefix = line.trim_start_matches('!');
             for cmd in bash_commands {
                 let full = format!("!{}", cmd);
@@ -1251,7 +1300,15 @@ impl Completer for Repl {
         if line.starts_with('@') {
             let prefix = line.trim_start_matches('@');
             // Suggest some common file patterns
-            let patterns = ["src/", "lib/", "tests/", "docs/", "Cargo.toml", "package.json", "README.md"];
+            let patterns = [
+                "src/",
+                "lib/",
+                "tests/",
+                "docs/",
+                "Cargo.toml",
+                "package.json",
+                "README.md",
+            ];
             for pat in patterns {
                 if pat.starts_with(prefix) {
                     suggestions.push(Suggestion {

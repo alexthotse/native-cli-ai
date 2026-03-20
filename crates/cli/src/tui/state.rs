@@ -1,13 +1,23 @@
 //! Transcript + status driven by `AgentEvent`.
 
 use nca_common::event::{AgentEvent, InteractiveQuestionPayload};
+use serde_json::Value;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub enum DisplayBlock {
     User(String),
     Assistant(String),
-    ToolRunning { name: String, call_id: String },
+    ToolRunning {
+        name: String,
+        call_id: String,
+        input: String,
+    },
+    ApprovalPending(ApprovalRequest),
+    ApprovalResolved {
+        tool: String,
+        approved: bool,
+    },
     ToolDone {
         name: String,
         ok: bool,
@@ -17,6 +27,14 @@ pub enum DisplayBlock {
     Question(InteractiveQuestionPayload),
     System(String),
     ErrorLine(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ApprovalRequest {
+    pub call_id: String,
+    pub tool: String,
+    pub description: String,
+    pub input: String,
 }
 
 pub struct TuiSessionState {
@@ -41,6 +59,12 @@ pub struct TuiSessionState {
     pub should_exit: bool,
     /// Selected row in slash-command popup (↑↓ or click).
     pub slash_menu_index: usize,
+    /// Centered command palette opened via Ctrl+P.
+    pub command_palette_open: bool,
+    /// Filter text for the command palette.
+    pub command_palette_query: String,
+    /// Approval request currently waiting for a local TUI answer.
+    pub active_approval: Option<ApprovalRequest>,
     /// When set, the composer answers this question (see status hint).
     pub active_question: Option<InteractiveQuestionPayload>,
 }
@@ -70,6 +94,9 @@ impl TuiSessionState {
             busy: false,
             should_exit: false,
             slash_menu_index: 0,
+            command_palette_open: false,
+            command_palette_query: String::new(),
+            active_approval: None,
             active_question: None,
         }
     }
@@ -101,9 +128,7 @@ impl TuiSessionState {
     pub fn apply_event(&mut self, e: &AgentEvent) {
         match e {
             AgentEvent::SessionStarted {
-                session_id,
-                model,
-                ..
+                session_id, model, ..
             } => {
                 self.session_id = session_id.clone();
                 self.model = model.clone();
@@ -125,29 +150,35 @@ impl TuiSessionState {
             AgentEvent::ToolCallStarted {
                 call_id,
                 tool,
-                ..
+                input,
             } => {
                 self.flush_stream_before_tool();
                 self.blocks.push(DisplayBlock::ToolRunning {
                     name: tool.clone(),
                     call_id: call_id.clone(),
+                    input: format_tool_input(input),
                 });
             }
             AgentEvent::ToolCallCompleted { call_id, output } => {
                 let ok = output.success;
+                self.active_approval = self
+                    .active_approval
+                    .take()
+                    .filter(|req| req.call_id != *call_id);
                 let detail = if ok {
                     truncate(&output.output, 120)
                 } else {
-                    output
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "failed".into())
+                    output.error.clone().unwrap_or_else(|| "failed".into())
                 };
-                if let Some(idx) = self.blocks.iter().rposition(|b| {
-                    matches!(b, DisplayBlock::ToolRunning { call_id: id, .. } if id == call_id)
-                }) {
+                if let Some(idx) = self.blocks.iter().rposition(
+                    |b| {
+                        matches!(b, DisplayBlock::ToolRunning { call_id: id, .. } if id == call_id)
+                            || matches!(b, DisplayBlock::ApprovalPending(req) if req.call_id == *call_id)
+                    },
+                ) {
                     let name = match &self.blocks[idx] {
                         DisplayBlock::ToolRunning { name, .. } => name.clone(),
+                        DisplayBlock::ApprovalPending(req) => req.tool.clone(),
                         _ => "?".into(),
                     };
                     self.blocks[idx] = DisplayBlock::ToolDone { name, ok, detail };
@@ -160,20 +191,59 @@ impl TuiSessionState {
                 }
             }
             AgentEvent::ApprovalRequested {
-                tool, description, ..
+                call_id,
+                tool,
+                description,
             } => {
-                self.blocks.push(DisplayBlock::System(format!(
-                    "Approval required: {} — {}",
-                    tool, description
-                )));
-            }
-            AgentEvent::ApprovalResolved { approved, .. } => {
-                let line = if *approved {
-                    "Approved.".to_string()
-                } else {
-                    "Denied.".to_string()
+                let input = self
+                    .blocks
+                    .iter()
+                    .rev()
+                    .find_map(|block| match block {
+                        DisplayBlock::ToolRunning {
+                            call_id: id, input, ..
+                        } if id == call_id => Some(input.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "{}".into());
+                let req = ApprovalRequest {
+                    call_id: call_id.clone(),
+                    tool: tool.clone(),
+                    description: description.clone(),
+                    input,
                 };
-                self.blocks.push(DisplayBlock::System(line));
+                self.active_approval = Some(req.clone());
+                if let Some(idx) = self.blocks.iter().rposition(
+                    |b| matches!(b, DisplayBlock::ToolRunning { call_id: id, .. } if id == call_id),
+                ) {
+                    self.blocks[idx] = DisplayBlock::ApprovalPending(req);
+                } else {
+                    self.blocks.push(DisplayBlock::ApprovalPending(req));
+                }
+            }
+            AgentEvent::ApprovalResolved { call_id, approved } => {
+                let tool = self
+                    .active_approval
+                    .as_ref()
+                    .filter(|req| req.call_id == *call_id)
+                    .map(|req| req.tool.clone())
+                    .or_else(|| {
+                        self.blocks.iter().rev().find_map(|block| match block {
+                            DisplayBlock::ApprovalPending(req) if req.call_id == *call_id => {
+                                Some(req.tool.clone())
+                            }
+                            _ => None,
+                        })
+                    })
+                    .unwrap_or_else(|| "tool".into());
+                self.active_approval = self
+                    .active_approval
+                    .take()
+                    .filter(|req| req.call_id != *call_id);
+                self.blocks.push(DisplayBlock::ApprovalResolved {
+                    tool,
+                    approved: *approved,
+                });
             }
             AgentEvent::QuestionRequested { question } => {
                 self.active_question = Some(question.clone());
@@ -242,8 +312,20 @@ fn truncate(s: &str, max: usize) -> String {
     if t.chars().count() <= max {
         t.to_string()
     } else {
-        format!("{}…", t.chars().take(max.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            t.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     }
+}
+
+fn format_tool_input(value: &Value) -> String {
+    if let Some(raw) = value.as_str() {
+        if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
+            return serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.to_string());
+        }
+    }
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
 #[cfg(test)]
@@ -273,7 +355,10 @@ mod tests {
         st.apply_event(&AgentEvent::QuestionRequested {
             question: q.clone(),
         });
-        assert_eq!(st.active_question.as_ref().map(|x| x.question_id.as_str()), Some("q-1"));
+        assert_eq!(
+            st.active_question.as_ref().map(|x| x.question_id.as_str()),
+            Some("q-1")
+        );
         assert!(matches!(st.blocks.last(), Some(DisplayBlock::Question(_))));
 
         st.apply_event(&AgentEvent::QuestionResolved {
@@ -281,5 +366,35 @@ mod tests {
             selection: QuestionSelection::Suggested,
         });
         assert!(st.active_question.is_none());
+    }
+
+    #[test]
+    fn approval_requested_promotes_running_tool_with_input() {
+        let mut st = TuiSessionState::new(
+            "session-x".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+        );
+        st.apply_event(&AgentEvent::ToolCallStarted {
+            call_id: "call-1".into(),
+            tool: "execute_bash".into(),
+            input: serde_json::json!({"command":"ls -la"}),
+        });
+        st.apply_event(&AgentEvent::ApprovalRequested {
+            call_id: "call-1".into(),
+            tool: "execute_bash".into(),
+            description: "Tool `execute_bash` requires approval".into(),
+        });
+
+        assert!(st.active_approval.is_some());
+        match st.blocks.last() {
+            Some(DisplayBlock::ApprovalPending(req)) => {
+                assert_eq!(req.tool, "execute_bash");
+                assert!(req.input.contains("command"));
+                assert!(req.input.contains("ls -la"));
+            }
+            other => panic!("expected approval block, got {other:?}"),
+        }
     }
 }

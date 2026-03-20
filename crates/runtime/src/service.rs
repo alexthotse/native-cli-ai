@@ -108,6 +108,7 @@ async fn run_service_session_with_startup(
                 request.safe_mode,
                 true,
                 session_id,
+                None,
             )
             .await
         }
