@@ -35,6 +35,8 @@ This document records every dependency choice, the rationale behind it, and the 
 | `ratatui` | 0.30.x | Widget-based terminal UI framework |
 | `crossterm` | 0.29.x | Cross-platform terminal backend (events, raw mode, colors) |
 | `reedline` | 0.44.x | Line editor with history, completions, and hints |
+| `arboard` | 3.x | Clipboard access for pasting bitmap images into the TUI composer |
+| `image` | 0.25.x | Encode clipboard RGBA payloads to PNG for session attachments |
 
 **Why ratatui + crossterm**: ratatui is the most actively maintained TUI framework in Rust (19M+ downloads). crossterm is its default backend and works on Windows, macOS, and Linux without external dependencies.
 

@@ -332,14 +332,39 @@ impl Supervisor {
     }
 
     pub async fn run_turn(&mut self, prompt: &str) -> Result<String, ProviderError> {
+        self.run_turn_with_images(prompt, &[]).await
+    }
+
+    /// Like [`run_turn`], but attaches on-disk images (paths relative to workspace) for vision models.
+    pub async fn run_turn_with_images(
+        &mut self,
+        prompt: &str,
+        attachments: &[nca_common::message::ImageAttachment],
+    ) -> Result<String, ProviderError> {
+        if !attachments.is_empty()
+            && !nca_common::model_caps::model_accepts_native_images(
+                self.config.provider.default,
+                self.model.as_str(),
+            )
+        {
+            return Err(ProviderError::Configuration(format!(
+                "native images are not supported for provider {} with model `{}` (pick a vision-capable model or remove image attachments)",
+                self.config.provider.default.display_name(),
+                self.model
+            )));
+        }
+
         // Check context before running turn
         self.maybe_compact_context().await;
 
-        let output = self.agent.run_turn(prompt).await?;
-        
+        let output = self
+            .agent
+            .run_turn(prompt, self.workspace_root.as_path(), attachments)
+            .await?;
+
         // Check context after turn
         self.check_and_summarize_context().await;
-        
+
         self.refresh_session_summary();
         self.save().await.map_err(|e| ProviderError::Other(e))?;
         self.update_last_session()
@@ -490,7 +515,15 @@ impl Supervisor {
         
         let messages = vec![Message::user(prompt)];
         
-        let mut stream = self.agent.provider.chat(&messages, &[], &self.model)
+        let mut stream = self
+            .agent
+            .provider
+            .chat(
+                &messages,
+                &[],
+                &self.model,
+                self.workspace_root.as_path(),
+            )
             .await
             .map_err(|e| e.to_string())?;
         
@@ -1206,11 +1239,12 @@ fn build_parent_summary(messages: &[nca_common::message::Message]) -> String {
             Role::System => "System",
             Role::Tool => continue,
         };
-        let content = if msg.content.len() > 500 {
-            let truncated: String = msg.content.chars().take(500).collect();
+        let body = msg.content.event_preview();
+        let content = if body.len() > 500 {
+            let truncated: String = body.chars().take(500).collect();
             format!("{truncated}...")
         } else {
-            msg.content.clone()
+            body
         };
         summary.push_str(&format!("[{role}]: {content}\n\n"));
     }

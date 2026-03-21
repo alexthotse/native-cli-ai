@@ -32,6 +32,7 @@ Execution rules:
 - Prefer fast local signals first: top-level listing, targeted search, focused file reads, and symbol-level inspection.
 
 Tool and validation rules:
+- When the user attaches images via nca (pasted or `/image`), the runtime already runs MiniMax native vision (`/v1/coding_plan/vlm`) and injects a text description into the conversation. Answer from that context; do **not** use `fetch_url` for workspace paths like `.nca/sessions/.../attachments/` or `file:` URLs to "load" those images.
 - Use list/search/read tools first to build a plan.
 - Use write/create tools only after enough context is gathered.
 - Validate important changes with tests, checks, or other concrete signals before claiming success.

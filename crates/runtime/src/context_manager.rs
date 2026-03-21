@@ -6,7 +6,7 @@
 //! - Automatic summarization when context approaches limits
 //! - Preservation of critical messages (system prompt, memory, etc.)
 
-use nca_common::message::{Message, Role};
+use nca_common::message::{Message, MessageContent, Role};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for context management behavior.
@@ -92,7 +92,7 @@ impl ContextManager {
             _ => 4.0,
         };
         
-        let content_tokens = message.content.len() as f64 / divisor;
+        let content_tokens = message.content.approx_chars() as f64 / divisor;
         
         // Add overhead for tool calls
         let tool_call_overhead = message.tool_calls
@@ -232,10 +232,10 @@ impl ContextManager {
         if !summary.trim().is_empty() {
             result.push(Message {
                 role: Role::System,
-                content: format!(
+                content: MessageContent::Text(format!(
                     "## Conversation Summary (Earlier Context)\n\n{}",
                     summary
-                ),
+                )),
                 tool_call_id: None,
                 tool_calls: None,
             });
@@ -276,14 +276,16 @@ impl ContextManager {
         messages
             .iter()
             .map(|m| {
-                if m.content.len() > self.config.max_message_chars_for_summary {
-                    let truncated: String = m.content
+                if m.content.approx_chars() > self.config.max_message_chars_for_summary {
+                    let truncated: String = m
+                        .content
+                        .to_summary_text()
                         .chars()
                         .take(self.config.max_message_chars_for_summary)
                         .collect();
                     Message {
                         role: m.role.clone(),
-                        content: format!("{}...[truncated]", truncated),
+                        content: MessageContent::Text(format!("{}...[truncated]", truncated)),
                         tool_call_id: m.tool_call_id.clone(),
                         tool_calls: m.tool_calls.clone(),
                     }
@@ -361,7 +363,7 @@ mod tests {
     fn make_message(role: Role, content: &str) -> Message {
         Message {
             role,
-            content: content.to_string(),
+            content: MessageContent::Text(content.to_string()),
             tool_call_id: None,
             tool_calls: None,
         }
@@ -444,6 +446,8 @@ mod tests {
         // Note: The compaction plan keeps last 2 non-system messages
         assert!(result.len() >= 2, "Expected at least 2 messages, got {}", result.len());
         // The summary should be in a system message
-        assert!(result.iter().any(|m| m.content.contains("Conversation Summary")));
+        assert!(result
+            .iter()
+            .any(|m| m.content.to_summary_text().contains("Conversation Summary")));
     }
 }

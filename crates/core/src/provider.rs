@@ -2,11 +2,14 @@ pub mod anthropic;
 pub mod anthropic_compat;
 pub mod factory;
 pub mod minimax;
+pub mod minimax_vlm;
 pub mod openai;
 pub mod openai_compat;
 pub mod openrouter;
 #[cfg(test)]
 pub mod test_support;
+
+use std::path::Path;
 
 use async_trait::async_trait;
 use nca_common::message::Message;
@@ -27,12 +30,25 @@ pub enum StreamChunk {
 /// Abstraction over LLM providers (Anthropic, OpenAI, Gemini, etc.).
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// Rewrite conversation history before an HTTP request (e.g. MiniMax `coding_plan/vlm` for images).
+    /// Default: no-op.
+    async fn prepare_messages_for_request(
+        &self,
+        _messages: &mut Vec<Message>,
+        _workspace_root: &Path,
+    ) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     /// Send a conversation and receive a streaming response.
+    ///
+    /// `workspace_root` is used to resolve on-disk image paths embedded in user messages.
     async fn chat(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         model: &str,
+        workspace_root: &Path,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>, ProviderError>;
 }
 

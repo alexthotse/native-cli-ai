@@ -1,8 +1,10 @@
 use futures_util::future::join_all;
 use nca_common::event::AgentEvent;
-use nca_common::message::{Message, MessageToolCall};
+use nca_common::message::{ContentPart, ImageAttachment, Message, MessageToolCall};
 use nca_common::tool::{PermissionTier, ToolCall, ToolDefinition, ToolResult};
 use serde_json::json;
+use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -63,17 +65,46 @@ impl AgentLoop {
 
     /// Run one turn: send messages to the provider, execute any tool calls,
     /// and repeat until the provider returns a final text response.
-    pub async fn run_turn(&mut self, user_input: &str) -> Result<String, ProviderError> {
+    pub async fn run_turn(
+        &mut self,
+        user_input: &str,
+        workspace_root: &Path,
+        attachments: &[ImageAttachment],
+    ) -> Result<String, ProviderError> {
         self.cancel_flag.store(false, Ordering::SeqCst);
-        self.messages.push(Message::user(user_input));
+        let user_msg = if attachments.is_empty() {
+            Message::user(user_input)
+        } else {
+            let mut parts: Vec<ContentPart> = Vec::new();
+            let trimmed = user_input.trim();
+            if !trimmed.is_empty() {
+                parts.push(ContentPart::Text {
+                    text: user_input.to_string(),
+                });
+            } else {
+                parts.push(ContentPart::Text {
+                    text: "(See attached image(s).)".into(),
+                });
+            }
+            for a in attachments {
+                parts.push(ContentPart::Image {
+                    media_type: a.media_type.clone(),
+                    path: a.path.clone(),
+                });
+            }
+            Message::user_with_parts(parts)
+        };
+        let preview = user_msg.event_preview();
+        self.messages.push(user_msg);
         self.emit(AgentEvent::MessageReceived {
             role: "user".into(),
-            content: user_input.into(),
+            content: preview,
         })
         .await;
 
         let mut turn = 0_u32;
         let mut empty_retries = 0_u32;
+        let mut attachments_cleaned = attachments.is_empty();
         const MAX_EMPTY_RETRIES: u32 = 2;
 
         let final_text = loop {
@@ -98,9 +129,17 @@ impl AgentLoop {
                 turn,
             })
             .await;
+            self.provider
+                .prepare_messages_for_request(&mut self.messages, workspace_root)
+                .await?;
             let mut stream = self
                 .provider
-                .chat(&self.messages, &self.tool_definitions(), &self.model)
+                .chat(
+                    &self.messages,
+                    &self.tool_definitions(),
+                    &self.model,
+                    workspace_root,
+                )
                 .await?;
 
             let mut assistant_text = String::new();
@@ -144,6 +183,11 @@ impl AgentLoop {
                     }
                     StreamChunk::Done => break,
                 }
+            }
+
+            if !attachments_cleaned {
+                cleanup_processed_attachments(&mut self.messages, workspace_root, attachments);
+                attachments_cleaned = true;
             }
 
             if tool_calls.is_empty() {
@@ -430,7 +474,7 @@ impl AgentLoop {
             let estimated_input = (self
                 .messages
                 .iter()
-                .map(|message| message.content.len())
+                .map(|message| message.content.approx_chars())
                 .sum::<usize>()
                 / 4) as u64;
             let estimated_output = (final_text.len() / 4) as u64;
@@ -468,6 +512,37 @@ impl AgentLoop {
 
     fn is_cancelled(&self) -> bool {
         self.cancel_flag.load(Ordering::SeqCst)
+    }
+}
+
+fn cleanup_processed_attachments(
+    messages: &mut [Message],
+    workspace_root: &Path,
+    attachments: &[ImageAttachment],
+) {
+    let removed_paths: HashSet<String> = attachments.iter().map(|a| a.path.clone()).collect();
+    if removed_paths.is_empty() {
+        return;
+    }
+
+    for message in messages {
+        let _ = message.content.strip_image_paths(&removed_paths);
+    }
+
+    for attachment in attachments {
+        let full_path = workspace_root.join(&attachment.path);
+        if let Err(err) = std::fs::remove_file(&full_path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    "failed to remove processed image attachment {}: {}",
+                    full_path.display(),
+                    err
+                );
+            }
+        }
+        if let Some(parent) = full_path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 }
 

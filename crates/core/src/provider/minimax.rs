@@ -1,9 +1,12 @@
+use std::path::Path;
+
 use nca_common::config::{MiniMaxConfig, NcaConfig};
 use nca_common::message::Message;
 use nca_common::tool::ToolDefinition;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
 use super::anthropic_compat::{anthropic_request_body, map_provider_error, spawn_anthropic_stream};
+use super::minimax_vlm::{materialize_minimax_user_images, minimax_api_origin};
 use super::{Provider, ProviderError, StreamChunk};
 
 /// MiniMax provider using the Anthropic-compatible endpoint.
@@ -68,11 +71,41 @@ impl MiniMaxProvider {
 
 #[async_trait::async_trait]
 impl Provider for MiniMaxProvider {
+    async fn prepare_messages_for_request(
+        &self,
+        messages: &mut Vec<Message>,
+        workspace_root: &Path,
+    ) -> Result<(), ProviderError> {
+        use nca_common::message::Role;
+        if !messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content.has_image_parts())
+        {
+            return Ok(());
+        }
+        let api_key = self.config.resolve_api_key().ok_or_else(|| {
+            ProviderError::Configuration(
+                "missing MiniMax API key for vision (coding_plan/vlm)".into(),
+            )
+        })?;
+        let origin = minimax_api_origin(&self.config.base_url);
+        *messages = materialize_minimax_user_images(
+            messages,
+            workspace_root,
+            &self.client,
+            &origin,
+            &api_key,
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn chat(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         model: &str,
+        workspace_root: &Path,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>, ProviderError> {
         let model = if model.is_empty() {
             self.config.model.clone()
@@ -88,7 +121,8 @@ impl Provider for MiniMaxProvider {
             // Anthropic requires temperature=1 when extended thinking is active.
             // MiniMax-M2.5 is a reasoning model; using 1.0 avoids API errors.
             1.0,
-        );
+            workspace_root,
+        )?;
 
         if std::env::var("NCA_DEBUG_REQUEST").is_ok() {
             eprintln!(
