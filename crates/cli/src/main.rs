@@ -1,5 +1,6 @@
 mod approval_prompts;
 mod cli_index;
+mod image_attach;
 mod prompt;
 mod repl;
 mod runner;

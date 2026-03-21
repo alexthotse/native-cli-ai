@@ -16,6 +16,7 @@ pub const SLASH_COMMANDS: &[&str] = &[
     "/agents",
     "/logs",
     "/attach",
+    "/image",
     "/config",
     "/doctor",
     "/model",

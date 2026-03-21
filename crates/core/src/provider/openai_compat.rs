@@ -1,5 +1,8 @@
+use std::path::Path;
+
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use futures_util::StreamExt;
-use nca_common::message::{Message, Role};
+use nca_common::message::{ContentPart, Message, MessageContent, Role};
 use nca_common::tool::{ToolCall, ToolDefinition};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -12,7 +15,8 @@ pub fn openai_request_body(
     model: &str,
     max_tokens: u32,
     temperature: f32,
-) -> Value {
+    workspace_root: &Path,
+) -> Result<Value, ProviderError> {
     let tools = if tools.is_empty() {
         None
     } else {
@@ -33,9 +37,9 @@ pub fn openai_request_body(
         )
     };
 
-    json!({
+    Ok(json!({
         "model": model,
-        "messages": to_openai_messages(messages),
+        "messages": to_openai_messages(messages, workspace_root)?,
         "tools": tools,
         "stream": true,
         "stream_options": {
@@ -43,7 +47,7 @@ pub fn openai_request_body(
         },
         "max_tokens": max_tokens,
         "temperature": temperature,
-    })
+    }))
 }
 
 pub fn spawn_openai_stream(
@@ -195,26 +199,77 @@ async fn flush_openai_tool_calls(
     }
 }
 
-fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
+fn tool_content_string(content: &MessageContent) -> String {
+    match content {
+        MessageContent::Text(t) => t.clone(),
+        MessageContent::Parts(_) => content.to_summary_text(),
+    }
+}
+
+fn openai_user_content_value(
+    content: &MessageContent,
+    workspace_root: &Path,
+) -> Result<Value, ProviderError> {
+    match content {
+        MessageContent::Text(s) => Ok(json!(s)),
+        MessageContent::Parts(parts) => {
+            let mut blocks = Vec::new();
+            for p in parts {
+                match p {
+                    ContentPart::Text { text } => {
+                        blocks.push(json!({
+                            "type": "text",
+                            "text": text,
+                        }));
+                    }
+                    ContentPart::Image { media_type, path } => {
+                        let full = workspace_root.join(path);
+                        let bytes = std::fs::read(&full).map_err(|e| {
+                            ProviderError::RequestFailed(format!(
+                                "failed to read image {}: {e}",
+                                full.display()
+                            ))
+                        })?;
+                        let b64 = B64.encode(bytes);
+                        let url = format!("data:{media_type};base64,{b64}");
+                        blocks.push(json!({
+                            "type": "image_url",
+                            "image_url": { "url": url }
+                        }));
+                    }
+                }
+            }
+            Ok(Value::Array(blocks))
+        }
+    }
+}
+
+fn to_openai_messages(
+    messages: &[Message],
+    workspace_root: &Path,
+) -> Result<Vec<Value>, ProviderError> {
     let mut out = Vec::new();
 
     for message in messages {
         match message.role {
             Role::System => out.push(json!({
                 "role": "system",
-                "content": message.content,
+                "content": tool_content_string(&message.content),
             })),
-            Role::User => out.push(json!({
-                "role": "user",
-                "content": message.content,
-            })),
+            Role::User => {
+                let c = openai_user_content_value(&message.content, workspace_root)?;
+                out.push(json!({
+                    "role": "user",
+                    "content": c,
+                }));
+            }
             Role::Assistant => {
                 let mut value = json!({
                     "role": "assistant",
                     "content": if message.content.is_empty() && message.tool_calls.is_some() {
                         Value::Null
                     } else {
-                        Value::String(message.content.clone())
+                        openai_user_content_value(&message.content, workspace_root)?
                     },
                 });
 
@@ -241,10 +296,10 @@ fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
             Role::Tool => out.push(json!({
                 "role": "tool",
                 "tool_call_id": message.tool_call_id,
-                "content": message.content,
+                "content": tool_content_string(&message.content),
             })),
         }
     }
 
-    out
+    Ok(out)
 }

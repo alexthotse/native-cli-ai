@@ -17,6 +17,7 @@ The product surface is the CLI. No desktop wrapper, no Electron, no browser in t
 - Spawns child agents with explicit parent/child lineage and optional git worktrees.
 - Uses MiniMax by default, with OpenAI, Anthropic, and OpenRouter support.
 - Loads built-in tools plus optional MCP tools from config.
+- Sends **native multimodal** (text + image) messages to MiniMax and other vision-capable models; images are stored under `.nca/sessions/<id>/attachments/`.
 
 ## Why People Reach For It
 
@@ -66,6 +67,17 @@ nca attach <session_id>
 ```
 
 The full-screen UI appears when `stdin` and `stdout` are TTYs and `--stream human` is active. Otherwise `nca` falls back to the line-oriented REPL or one-shot execution path.
+
+### Images (full-screen TUI)
+
+In the default TUI you can attach images for the **next** user message:
+
+- **Ctrl+V** — paste a bitmap from the system clipboard (saved as PNG under the session).
+- **`/image paste`** — same as clipboard paste if Ctrl+V is not available.
+- **`/image path/to/screenshot.png`** — copy a file into the session attachment dir.
+- **`/image clear`** — remove staged images before you press Enter.
+
+For **MiniMax**, pasted images are analyzed with the same HTTP API as the MCP’s `understand_image` tool (`POST /v1/coding_plan/vlm` on `https://api.minimax.io` or your region host—see [MiniMax-Coding-Plan-MCP](https://github.com/MiniMax-AI/MiniMax-Coding-Plan-MCP)); nca does this in Rust (no Python MCP). The description is merged into the user message before `/v1/messages`. Other providers use their own multimodal chat formats where supported. If the **selected provider/model is not treated as vision-capable**, `nca` **errors** instead of silently dropping images. Session attachment copies are removed automatically after a successful send/process; your original source file is not deleted.
 
 ## A Quick Look 👀
 

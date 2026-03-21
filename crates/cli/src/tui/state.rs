@@ -1,7 +1,9 @@
 //! Transcript + status driven by `AgentEvent`.
 
 use nca_common::event::{AgentEvent, InteractiveQuestionPayload};
+use nca_common::message::ImageAttachment;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -58,8 +60,12 @@ pub struct TuiSessionState {
     /// When true, transcript stays pinned to the bottom as new output arrives.
     pub transcript_follow_tail: bool,
     pub session_id: String,
+    /// Workspace root for resolving attachment paths and clipboard import.
+    pub workspace_root: PathBuf,
     /// Workspace root (from `SessionStarted`), for sidebar context.
     pub workspace_display: String,
+    /// Images to send on the next user message (TUI only).
+    pub staged_image_attachments: Vec<ImageAttachment>,
     /// Live view of spawned sub-agents (updated from child activity events).
     pub subagents: Vec<SubagentRow>,
     pub model: String,
@@ -101,6 +107,7 @@ impl TuiSessionState {
         model: String,
         agent_profile: String,
         permission_mode: String,
+        workspace_root: PathBuf,
     ) -> Self {
         Self {
             blocks: Vec::new(),
@@ -110,7 +117,9 @@ impl TuiSessionState {
             scroll_lines: 0,
             transcript_follow_tail: true,
             session_id,
+            workspace_root,
             workspace_display: String::new(),
+            staged_image_attachments: Vec::new(),
             subagents: Vec::new(),
             model,
             agent_profile,
@@ -208,6 +217,7 @@ impl TuiSessionState {
             } => {
                 self.session_id = session_id.clone();
                 self.model = model.clone();
+                self.workspace_root = workspace.clone();
                 self.workspace_display = workspace.display().to_string();
             }
             AgentEvent::MessageReceived { role, content } => {
@@ -495,6 +505,7 @@ mod tests {
             "m".into(),
             "@build".into(),
             "default".into(),
+            PathBuf::from("/tmp"),
         );
         let q = InteractiveQuestionPayload {
             question_id: "q-1".into(),
@@ -530,6 +541,7 @@ mod tests {
             "m".into(),
             "@build".into(),
             "default".into(),
+            PathBuf::from("/tmp"),
         );
         st.apply_event(&AgentEvent::ChildSessionSpawned {
             parent_session_id: "session-x".into(),
@@ -555,6 +567,7 @@ mod tests {
             "m".into(),
             "@build".into(),
             "default".into(),
+            PathBuf::from("/tmp"),
         );
         st.apply_event(&AgentEvent::ToolCallStarted {
             call_id: "call-1".into(),
@@ -585,6 +598,7 @@ mod tests {
             "m".into(),
             "@build".into(),
             "default".into(),
+            PathBuf::from("/tmp"),
         );
         st.active_approval = Some(ApprovalRequest {
             call_id: "call-1".into(),

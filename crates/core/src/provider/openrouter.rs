@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use nca_common::config::{NcaConfig, OpenRouterConfig};
 use nca_common::message::Message;
 use nca_common::tool::ToolDefinition;
@@ -81,6 +83,7 @@ impl Provider for OpenRouterProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
         model: &str,
+        workspace_root: &Path,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>, ProviderError> {
         let model = if model.is_empty() {
             self.config.model.clone()
@@ -94,7 +97,8 @@ impl Provider for OpenRouterProvider {
             &model,
             self.max_tokens,
             self.config.temperature,
-        );
+            workspace_root,
+        )?;
 
         let response = self
             .client
@@ -161,7 +165,7 @@ mod tests {
 
         let provider = OpenRouterProvider::from_config(&config).expect("provider");
         let stream = provider
-            .chat(&[Message::user("hello")], &[], "")
+            .chat(&[Message::user("hello")], &[], "", std::path::Path::new("."))
             .await
             .expect("chat stream");
 

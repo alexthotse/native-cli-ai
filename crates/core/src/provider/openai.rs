@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use nca_common::config::{NcaConfig, OpenAiConfig};
 use nca_common::message::Message;
 use nca_common::tool::ToolDefinition;
@@ -61,6 +63,7 @@ impl Provider for OpenAiProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
         model: &str,
+        workspace_root: &Path,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>, ProviderError> {
         let model = if model.is_empty() {
             self.config.model.clone()
@@ -74,7 +77,8 @@ impl Provider for OpenAiProvider {
             &model,
             self.max_tokens,
             self.config.temperature,
-        );
+            workspace_root,
+        )?;
 
         let response = self
             .client
@@ -142,6 +146,7 @@ mod tests {
                     }),
                 }],
                 "",
+                std::path::Path::new("."),
             )
             .await
             .expect("chat stream");

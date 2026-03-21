@@ -539,6 +539,7 @@ impl Repl {
                        /agents                    Show child sessions\n\
                        /logs                      Print the current event log\n\
                        /attach                    Show current attach target\n\
+                       /image [paste|clear|<path>] Stage image for next message (TUI; Ctrl+V paste)\n\
                        /config                    Show effective runtime config\n\
                        /doctor                    Run MiniMax config checks\n\
                        /sessions                  List local session IDs\n\
@@ -551,6 +552,7 @@ impl Repl {
                        Ctrl+D                     Exit repl\n\
                        Ctrl+C                     Cancel current request\n\
                        Ctrl+L                     Clear screen\n\
+                       Ctrl+V                     Paste clipboard image (full-screen TUI)\n\
                        Ctrl+R                     Search command history\n",
                 );
             }
@@ -883,6 +885,59 @@ impl Repl {
                         .unwrap_or_else(|| "<none>".into())
                 ));
             }
+            "/image" => {
+                let st = match &out {
+                    ReplOutput::Tui(st) => st,
+                    ReplOutput::Stdio => {
+                        out.eprintln(
+                            "[image] stage images from the full-screen TUI (Ctrl+V, /image paste, /image <path>)",
+                        );
+                        return Ok(true);
+                    }
+                };
+                let workspace = self.runtime.workspace_root().to_path_buf();
+                let sid = self.runtime.session_id().to_string();
+                let rest_trim = rest.trim();
+                if rest_trim.is_empty() || rest_trim.eq_ignore_ascii_case("paste") {
+                    match crate::image_attach::paste_clipboard_image(&workspace, &sid) {
+                        Ok(att) => {
+                            let path = att.path.clone();
+                            let n = if let Ok(mut g) = st.lock() {
+                                g.staged_image_attachments.push(att);
+                                g.staged_image_attachments.len()
+                            } else {
+                                0
+                            };
+                            out.println(&format!(
+                                "[image] staged {path} — press Enter to send ({n} attached)"
+                            ));
+                        }
+                        Err(e) => out.eprintln(&format!("[image] {e}")),
+                    }
+                } else if rest_trim.eq_ignore_ascii_case("clear") {
+                    if let Ok(mut g) = st.lock() {
+                        g.staged_image_attachments.clear();
+                    }
+                    out.println("[image] cleared staged images");
+                } else {
+                    let p = std::path::Path::new(rest_trim);
+                    match crate::image_attach::import_image_file(&workspace, &sid, p) {
+                        Ok(att) => {
+                            let path = att.path.clone();
+                            let n = if let Ok(mut g) = st.lock() {
+                                g.staged_image_attachments.push(att);
+                                g.staged_image_attachments.len()
+                            } else {
+                                0
+                            };
+                            out.println(&format!(
+                                "[image] staged {path} — press Enter to send ({n} attached)"
+                            ));
+                        }
+                        Err(e) => out.eprintln(&format!("[image] {e}")),
+                    }
+                }
+            }
             "/config" => {
                 let config = self.runtime.config();
                 out.println(&format!(
@@ -1037,6 +1092,7 @@ impl Repl {
             model,
             self.current_agent_label.clone(),
             perm,
+            self.runtime.workspace_root().to_path_buf(),
         )));
 
         let log_path = self.runtime.event_log_path();
@@ -1238,7 +1294,17 @@ impl Repl {
                     if let Ok(mut g) = tui_state.lock() {
                         g.set_busy(true);
                     }
-                    if let Err(e) = self.runtime.run_turn(&line).await {
+                    let attachments = if let Ok(mut g) = tui_state.lock() {
+                        std::mem::take(&mut g.staged_image_attachments)
+                    } else {
+                        Vec::new()
+                    };
+                    let turn = if attachments.is_empty() {
+                        self.runtime.run_turn(&line).await
+                    } else {
+                        self.runtime.run_turn_with_images(&line, attachments).await
+                    };
+                    if let Err(e) = turn {
                         if let Ok(mut g) = tui_state.lock() {
                             g.push_error(e.to_string());
                         }

@@ -595,7 +595,7 @@ fn transcript_lines_and_hits(
             &mut lines,
             &mut hits,
             Line::from(Span::styled(
-                "Tab  agent   Ctrl+P  commands   !cmd  shell   @path  search   /  inline   wheel  scroll",
+                "Tab  agent   Ctrl+V  image   Ctrl+P  commands   !cmd  shell   @path  search   /  inline   wheel  scroll",
                 Style::default().fg(theme::MUTED),
             )),
             None,
@@ -1246,7 +1246,7 @@ pub fn run_blocking(
                     ))
                 } else if g.input_buffer.is_empty() {
                     Line::from(Span::styled(
-                        "Enter send · Tab agent · / inline commands · Ctrl+P command palette · Esc exit · Ctrl+L clear",
+                        "Enter send · Tab agent · Ctrl+V image · /image · Ctrl+P palette · Esc exit · Ctrl+L clear",
                         Style::default().fg(theme::MUTED),
                     ))
                 } else {
@@ -1260,7 +1260,18 @@ pub fn run_blocking(
                 } else {
                     " message "
                 };
-                let input_block = Paragraph::new(Text::from(vec![input_line, hint]))
+                let mut input_lines = vec![input_line];
+                if !g.staged_image_attachments.is_empty() {
+                    input_lines.push(Line::from(Span::styled(
+                        format!(
+                            "  {} image(s) staged · Enter to send · /image clear",
+                            g.staged_image_attachments.len()
+                        ),
+                        Style::default().fg(theme::SUCCESS),
+                    )));
+                }
+                input_lines.push(hint);
+                let input_block = Paragraph::new(Text::from(input_lines))
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
@@ -1635,6 +1646,23 @@ pub fn run_blocking(
                             g.command_palette_open = true;
                             g.command_palette_query.clear();
                             g.slash_menu_index = 0;
+                        }
+                        (KeyCode::Char('v'), KeyModifiers::CONTROL) => {
+                            if g.active_approval.is_some() || g.active_question.is_some() {
+                                continue;
+                            }
+                            let ws = g.workspace_root.clone();
+                            let sid = g.session_id.clone();
+                            match crate::image_attach::paste_clipboard_image(&ws, &sid) {
+                                Ok(att) => {
+                                    let label = att.path.clone();
+                                    g.staged_image_attachments.push(att);
+                                    g.blocks.push(DisplayBlock::System(format!(
+                                        "[image] staged {label} — Enter to send"
+                                    )));
+                                }
+                                Err(e) => g.push_error(format!("[image] {e}")),
+                            }
                         }
                         (KeyCode::Tab, _) => {
                             let filtered = filter_slash_commands(&g.input_buffer);

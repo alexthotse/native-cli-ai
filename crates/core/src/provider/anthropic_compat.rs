@@ -1,5 +1,8 @@
+use std::path::Path;
+
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use futures_util::StreamExt;
-use nca_common::message::{Message, Role};
+use nca_common::message::{ContentPart, Message, MessageContent, Role};
 use nca_common::tool::{ToolCall, ToolDefinition};
 use serde_json::{Value, json};
 
@@ -11,8 +14,9 @@ pub fn anthropic_request_body(
     model: &str,
     max_tokens: u32,
     temperature: f32,
-) -> Value {
-    let (system, anthropic_messages) = to_anthropic_messages(messages);
+    workspace_root: &Path,
+) -> Result<Value, ProviderError> {
+    let (system, anthropic_messages) = to_anthropic_messages(messages, workspace_root)?;
     let tools = if tools.is_empty() {
         None
     } else {
@@ -30,7 +34,7 @@ pub fn anthropic_request_body(
         )
     };
 
-    json!({
+    Ok(json!({
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
@@ -38,7 +42,7 @@ pub fn anthropic_request_body(
         "tools": tools,
         "stream": true,
         "temperature": temperature,
-    })
+    }))
 }
 
 pub fn spawn_anthropic_stream(
@@ -201,13 +205,67 @@ async fn flush_anthropic_tool_call(
     tool_input.clear();
 }
 
-fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
+fn tool_content_string(content: &MessageContent) -> String {
+    match content {
+        MessageContent::Text(t) => t.clone(),
+        MessageContent::Parts(_) => content.to_summary_text(),
+    }
+}
+
+fn user_content_value(
+    content: &MessageContent,
+    workspace_root: &Path,
+) -> Result<Value, ProviderError> {
+    match content {
+        MessageContent::Text(s) => Ok(json!(s)),
+        MessageContent::Parts(parts) => {
+            let mut blocks = Vec::new();
+            for p in parts {
+                match p {
+                    ContentPart::Text { text } => {
+                        blocks.push(json!({
+                            "type": "text",
+                            "text": text,
+                        }));
+                    }
+                    ContentPart::Image { media_type, path } => {
+                        let full = workspace_root.join(path);
+                        let bytes = std::fs::read(&full).map_err(|e| {
+                            ProviderError::RequestFailed(format!(
+                                "failed to read image {}: {e}",
+                                full.display()
+                            ))
+                        })?;
+                        let data = B64.encode(bytes);
+                        blocks.push(json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data,
+                            }
+                        }));
+                    }
+                }
+            }
+            Ok(Value::Array(blocks))
+        }
+    }
+}
+
+fn to_anthropic_messages(
+    messages: &[Message],
+    workspace_root: &Path,
+) -> Result<(Option<String>, Vec<Value>), ProviderError> {
     let mut system_parts = Vec::new();
     let mut out = Vec::new();
     let mut i = 0;
 
     while i < messages.len() && messages[i].role == Role::System {
-        system_parts.push(messages[i].content.clone());
+        match &messages[i].content {
+            MessageContent::Text(t) => system_parts.push(t.clone()),
+            MessageContent::Parts(_) => system_parts.push(messages[i].content.to_summary_text()),
+        }
         i += 1;
     }
 
@@ -215,19 +273,27 @@ fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
         let message = &messages[i];
         match message.role {
             Role::User => {
+                let content = user_content_value(&message.content, workspace_root)?;
                 out.push(json!({
                     "role": "user",
-                    "content": message.content,
+                    "content": content,
                 }));
                 i += 1;
             }
             Role::Assistant => {
                 let mut blocks = Vec::new();
-                if !message.content.is_empty() {
-                    blocks.push(json!({
-                        "type": "text",
-                        "text": message.content,
-                    }));
+                if let MessageContent::Text(t) = &message.content {
+                    if !t.is_empty() {
+                        blocks.push(json!({
+                            "type": "text",
+                            "text": t,
+                        }));
+                    }
+                } else {
+                    let v = user_content_value(&message.content, workspace_root)?;
+                    if let Value::Array(arr) = v {
+                        blocks.extend(arr);
+                    }
                 }
                 if let Some(calls) = &message.tool_calls {
                     for call in calls {
@@ -240,13 +306,18 @@ fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
                     }
                 }
 
+                let content_out = if blocks.is_empty() {
+                    match &message.content {
+                        MessageContent::Text(t) => json!(t),
+                        MessageContent::Parts(_) => user_content_value(&message.content, workspace_root)?,
+                    }
+                } else {
+                    Value::Array(blocks)
+                };
+
                 out.push(json!({
                     "role": "assistant",
-                    "content": if blocks.is_empty() {
-                        json!(message.content)
-                    } else {
-                        Value::Array(blocks)
-                    },
+                    "content": content_out,
                 }));
                 i += 1;
             }
@@ -257,7 +328,7 @@ fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
                     results.push(json!({
                         "type": "tool_result",
                         "tool_use_id": tool_message.tool_call_id.as_deref().unwrap_or(""),
-                        "content": tool_message.content,
+                        "content": tool_content_string(&tool_message.content),
                     }));
                     i += 1;
                 }
@@ -278,5 +349,46 @@ fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
         Some(system_parts.join("\n\n"))
     };
 
-    (system, out)
+    Ok((system, out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine, engine::general_purpose::STANDARD as B64};
+    use nca_common::message::{ContentPart, Message};
+    use tempfile::tempdir;
+
+    #[test]
+    fn user_multimodal_message_serializes_image_base64_block() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+        let rel = ".nca/sessions/s1/attachments/x.png";
+        let att_dir = workspace.join(".nca/sessions/s1/attachments");
+        std::fs::create_dir_all(&att_dir).unwrap();
+        let png = B64
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+            .unwrap();
+        std::fs::write(att_dir.join("x.png"), png).unwrap();
+
+        let messages = vec![Message::user_with_parts(vec![
+            ContentPart::Text {
+                text: "describe".into(),
+            },
+            ContentPart::Image {
+                media_type: "image/png".into(),
+                path: rel.into(),
+            },
+        ])];
+
+        let body = anthropic_request_body(&messages, &[], "MiniMax-M2.5", 128, 1.0, workspace)
+            .expect("body");
+        let content = body["messages"][0]["content"].as_array().expect("array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert!(content[1]["source"]["data"].as_str().unwrap().len() > 8);
+    }
 }
