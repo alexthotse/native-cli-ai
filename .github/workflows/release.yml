@@ -66,6 +66,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Install OpenSSL
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
