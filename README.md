@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="#installation">Install</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#core-commands">Commands</a> &middot;
   <a href="#interactive-ux">Interactive UX</a> &middot;
@@ -57,16 +58,43 @@ The product surface is the CLI. No desktop wrapper, no Electron, no browser in t
 | Automation and orchestration | `--json`, `--stream ndjson`, Unix-socket IPC, and `NCA_ORCH_*` metadata make it usable as a worker process. |
 | Long-running research | `nca autoresearch once` runs metric-driven experiments with parsed output for CI/profiling. |
 
-## Quick Start
+## Installation
 
-This workspace uses Rust edition 2024, so use a recent Rust toolchain.
+### One-line install (macOS and Linux)
 
 ```bash
-# Build and install
+curl -fsSL https://nca-cli.com/install | bash
+```
+
+This detects your platform, downloads the latest release from GitHub, and installs `nca` to `/usr/local/bin`. Set `NCA_INSTALL_DIR` to change the install path.
+
+### GitHub Releases
+
+Pre-built binaries for every release are available on the [Releases](https://github.com/madebyaris/native-cli-ai/releases) page:
+
+| Platform | Target |
+|---|---|
+| macOS (Apple Silicon) | `aarch64-apple-darwin` |
+| macOS (Intel) | `x86_64-apple-darwin` |
+| Linux (x86_64, glibc) | `x86_64-unknown-linux-gnu` |
+| Linux (x86_64, static) | `x86_64-unknown-linux-musl` |
+| Linux (ARM64) | `aarch64-unknown-linux-gnu` |
+
+### Build from source
+
+Requires Rust edition 2024 (use a recent toolchain).
+
+```bash
+git clone https://github.com/madebyaris/native-cli-ai.git
+cd native-cli-ai
 cargo build --release
 cp target/release/nca /usr/local/bin/
+```
 
-# Configure the default provider
+## Quick Start
+
+```bash
+# Configure a provider
 export MINIMAX_API_KEY="your-api-key"
 
 # Start the interactive CLI
