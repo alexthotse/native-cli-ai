@@ -121,11 +121,10 @@ pub fn spawn_anthropic_stream(
                         let delta = &event["delta"];
                         match delta["type"].as_str().unwrap_or("") {
                             "text_delta" => {
-                                if let Some(text) = delta["text"].as_str() {
-                                    if !text.is_empty() {
-                                        let _ =
-                                            tx.send(StreamChunk::TextDelta(text.to_string())).await;
-                                    }
+                                if let Some(text) = delta["text"].as_str()
+                                    && !text.is_empty()
+                                {
+                                    let _ = tx.send(StreamChunk::TextDelta(text.to_string())).await;
                                 }
                             }
                             "input_json_delta" => {

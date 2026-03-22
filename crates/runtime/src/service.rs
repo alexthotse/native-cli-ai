@@ -273,11 +273,11 @@ fn spawn_service_event_fanout(
                 let _ = tx.send(line);
             }
 
-            if let Some(file) = log_file.as_mut() {
-                if let Ok(line) = serde_json::to_string(&envelope) {
-                    let _ = file.write_all(line.as_bytes()).await;
-                    let _ = file.write_all(b"\n").await;
-                }
+            if let Some(file) = log_file.as_mut()
+                && let Ok(line) = serde_json::to_string(&envelope)
+            {
+                let _ = file.write_all(line.as_bytes()).await;
+                let _ = file.write_all(b"\n").await;
             }
         }
     })

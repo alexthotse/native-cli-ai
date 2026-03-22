@@ -86,14 +86,14 @@ impl MessageContent {
 
         let mut changed = false;
         for part in parts.iter_mut() {
-            if let ContentPart::Image { path, .. } = part {
-                if removed_paths.contains(path) {
-                    let label = path.rsplit('/').next().unwrap_or(path);
-                    *part = ContentPart::Text {
-                        text: format!("[image processed and removed after send: {label}]"),
-                    };
-                    changed = true;
-                }
+            if let ContentPart::Image { path, .. } = part
+                && removed_paths.contains(path)
+            {
+                let label = path.rsplit('/').next().unwrap_or(path);
+                *part = ContentPart::Text {
+                    text: format!("[image processed and removed after send: {label}]"),
+                };
+                changed = true;
             }
         }
 

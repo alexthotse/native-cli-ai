@@ -1,3 +1,4 @@
+use crate::ipc_pending::{ApprovalPendingMap, QuestionPendingMap};
 use nca_common::config::{NcaConfig, PermissionMode};
 use nca_common::event::{AgentEvent, EndReason, QuestionSelection};
 use nca_common::session::{OrchestrationContext, SessionSnapshot};
@@ -6,15 +7,14 @@ use nca_core::provider::ProviderError;
 use nca_core::tools::spawn_subagent::SpawnRequest;
 use nca_runtime::ipc::IpcHandle;
 use nca_runtime::supervisor::{Supervisor, SupervisorConfig, SupervisorHandle};
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Resolve a pending `ask_question` without going through `SessionRuntime` (e.g. TUI side task
 /// while `run_turn` is blocked waiting on the same question).
 pub fn dispatch_question_answer(
-    qp: &Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    qp: &Option<QuestionPendingMap>,
     question_id: &str,
     selection: QuestionSelection,
 ) -> bool {
@@ -32,7 +32,7 @@ pub fn dispatch_question_answer(
 
 /// Resolve a pending approval without going through the main command loop.
 pub fn dispatch_tool_approval(
-    approvals: &Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
+    approvals: &Option<ApprovalPendingMap>,
     call_id: &str,
     approved: bool,
 ) -> bool {
@@ -53,7 +53,7 @@ pub fn dispatch_tool_approval(
 pub struct SessionRuntime {
     supervisor: Supervisor,
     handle: Option<SupervisorHandle>,
-    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    question_pending: Option<QuestionPendingMap>,
     config: NcaConfig,
 }
 
@@ -92,16 +92,12 @@ impl SessionRuntime {
         self.handle.as_mut()?.take_ipc_handle()
     }
 
-    pub fn take_ipc_approval_pending(
-        &mut self,
-    ) -> Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>> {
+    pub fn take_ipc_approval_pending(&mut self) -> Option<ApprovalPendingMap> {
         self.handle.as_mut()?.take_approval_pending()
     }
 
     /// Pending `ask_question` resolvers (same map the runtime tool waits on).
-    pub fn question_pending(
-        &self,
-    ) -> Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>> {
+    pub fn question_pending(&self) -> Option<QuestionPendingMap> {
         self.question_pending.clone()
     }
 

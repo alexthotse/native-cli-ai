@@ -296,21 +296,21 @@ mod tests {
         // Initialize git repo
         Command::new("git")
             .current_dir(temp.path())
-            .args(&["init"])
+            .args(["init"])
             .output()
             .await
             .expect("git init failed");
 
         Command::new("git")
             .current_dir(temp.path())
-            .args(&["config", "user.email", "test@test.com"])
+            .args(["config", "user.email", "test@test.com"])
             .output()
             .await
             .expect("git config failed");
 
         Command::new("git")
             .current_dir(temp.path())
-            .args(&["config", "user.name", "Test"])
+            .args(["config", "user.name", "Test"])
             .output()
             .await
             .expect("git config failed");
@@ -318,7 +318,7 @@ mod tests {
         // Add an initial commit so HEAD is valid
         Command::new("git")
             .current_dir(temp.path())
-            .args(&["commit", "--allow-empty", "-m", "initial"])
+            .args(["commit", "--allow-empty", "-m", "initial"])
             .output()
             .await
             .expect("git commit failed");

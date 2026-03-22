@@ -418,10 +418,10 @@ impl Repl {
         cfg.set_default_provider(p);
         match self.runtime.apply_nca_config(cfg) {
             Ok(()) => {
-                if let ReplOutput::Tui(st) = &out {
-                    if let Ok(mut g) = st.lock() {
-                        g.model = self.runtime.model().to_string();
-                    }
+                if let ReplOutput::Tui(st) = &out
+                    && let Ok(mut g) = st.lock()
+                {
+                    g.model = self.runtime.model().to_string();
                 }
                 match self
                     .runtime
@@ -617,14 +617,14 @@ impl Repl {
                         } else {
                             self.runtime.set_permission_mode(PermissionMode::Default);
                         }
-                        if let ReplOutput::Tui(st) = &out {
-                            if let Ok(mut g) = st.lock() {
-                                g.set_agent_profile(&self.current_agent_label);
-                                g.set_permission_mode(&format!(
-                                    "{:?}",
-                                    self.runtime.permission_mode()
-                                ));
-                            }
+                        if let ReplOutput::Tui(st) = &out
+                            && let Ok(mut g) = st.lock()
+                        {
+                            g.set_agent_profile(&self.current_agent_label);
+                            g.set_permission_mode(&format!(
+                                "{:?}",
+                                self.runtime.permission_mode()
+                            ));
                         }
                         out.println(&format!("Switched to @{} mode", profile.label()));
                     } else {
@@ -638,19 +638,20 @@ impl Repl {
                                 .join(", ")
                         ));
                     }
+                } else if let ReplOutput::Tui(st) = &out {
+                    let current_idx = AgentProfile::ALL
+                        .iter()
+                        .position(|p| *p == self.agent_profile)
+                        .unwrap_or(0);
+                    if let Ok(mut g) = st.lock() {
+                        g.open_agent_picker(current_idx);
+                    }
                 } else {
-                    if let ReplOutput::Tui(st) = &out {
-                        let current_idx = AgentProfile::ALL.iter().position(|p| *p == self.agent_profile).unwrap_or(0);
-                        if let Ok(mut g) = st.lock() {
-                            g.open_agent_picker(current_idx);
-                        }
-                    } else {
-                        out.println(&format!("Current agent: @{}", self.agent_profile.label()));
-                        out.println("Available profiles:");
-                        for profile in AgentProfile::ALL {
-                            let marker = if profile == self.agent_profile { " *" } else { "" };
-                            out.println(&format!("  @{}{}", profile.label(), marker));
-                        }
+                    out.println(&format!("Current agent: @{}", self.agent_profile.label()));
+                    out.println("Available profiles:");
+                    for profile in AgentProfile::ALL {
+                        let marker = if profile == self.agent_profile { " *" } else { "" };
+                        out.println(&format!("  @{}{}", profile.label(), marker));
                     }
                 }
             }
@@ -708,10 +709,10 @@ impl Repl {
                                     self.runtime.model()
                                 ));
                             }
-                            if let ReplOutput::Tui(st) = out {
-                                if let Ok(mut g) = st.lock() {
-                                    g.model = self.runtime.model().to_string();
-                                }
+                            if let ReplOutput::Tui(st) = out
+                                && let Ok(mut g) = st.lock()
+                            {
+                                g.model = self.runtime.model().to_string();
                             }
                         }
                         Err(e) => out.eprintln(&format!("[model] {e}")),
@@ -794,10 +795,10 @@ impl Repl {
                 if let Some(mode) = parts.next() {
                     if let Some(parsed_mode) = parse_permission_mode(mode) {
                         self.runtime.set_permission_mode(parsed_mode);
-                        if let ReplOutput::Tui(st) = out {
-                            if let Ok(mut g) = st.lock() {
-                                g.set_permission_mode(&format!("{parsed_mode:?}"));
-                            }
+                        if let ReplOutput::Tui(st) = out
+                            && let Ok(mut g) = st.lock()
+                        {
+                            g.set_permission_mode(&format!("{parsed_mode:?}"));
                         }
                         out.println(&format!("permission mode set to {parsed_mode:?}"));
                     } else {
@@ -805,18 +806,16 @@ impl Repl {
                             "invalid mode; expected one of: default, plan, accept-edits, dont-ask, bypass-permissions",
                         );
                     }
-                } else {
-                    if let ReplOutput::Tui(st) = &out {
-                        let current_idx = permission_mode_index(self.runtime.permission_mode());
-                        if let Ok(mut g) = st.lock() {
-                            g.open_permission_picker(current_idx);
-                        }
-                    } else {
-                        out.println(&format!(
-                            "permission_mode: {:?}",
-                            self.runtime.permission_mode()
-                        ));
+                } else if let ReplOutput::Tui(st) = &out {
+                    let current_idx = permission_mode_index(self.runtime.permission_mode());
+                    if let Ok(mut g) = st.lock() {
+                        g.open_permission_picker(current_idx);
                     }
+                } else {
+                    out.println(&format!(
+                        "permission_mode: {:?}",
+                        self.runtime.permission_mode()
+                    ));
                 }
             }
             "/permission-bypass" => {
@@ -839,10 +838,10 @@ impl Repl {
                     }
                 };
                 self.runtime.set_permission_mode(target);
-                if let ReplOutput::Tui(st) = out {
-                    if let Ok(mut g) = st.lock() {
-                        g.set_permission_mode(&format!("{target:?}"));
-                    }
+                if let ReplOutput::Tui(st) = out
+                    && let Ok(mut g) = st.lock()
+                {
+                    g.set_permission_mode(&format!("{target:?}"));
                 }
                 out.println(&format!("permission mode set to {target:?}"));
             }
@@ -1371,19 +1370,19 @@ impl Repl {
                 self.runtime.save().await.map_err(anyhow::Error::msg)?;
                 self.runtime.new_session().await.map_err(anyhow::Error::msg)?;
                 let new_id = self.runtime.session_id().to_string();
-                if let ReplOutput::Tui(st) = &out {
-                    if let Ok(mut g) = st.lock() {
-                        g.blocks.clear();
-                        g.streaming_assistant = None;
-                        g.scroll_lines = 0;
-                        g.transcript_follow_tail = true;
-                        g.session_id = new_id.clone();
-                        g.model = self.runtime.model().to_string();
-                        g.input_tokens = 0;
-                        g.output_tokens = 0;
-                        g.cost_usd = 0.0;
-                        g.started = std::time::Instant::now();
-                    }
+                if let ReplOutput::Tui(st) = &out
+                    && let Ok(mut g) = st.lock()
+                {
+                    g.blocks.clear();
+                    g.streaming_assistant = None;
+                    g.scroll_lines = 0;
+                    g.transcript_follow_tail = true;
+                    g.session_id = new_id.clone();
+                    g.model = self.runtime.model().to_string();
+                    g.input_tokens = 0;
+                    g.output_tokens = 0;
+                    g.cost_usd = 0.0;
+                    g.started = std::time::Instant::now();
                 }
                 out.println(&format!("new session started: {new_id}"));
             }
@@ -1397,24 +1396,25 @@ impl Repl {
                             String::new(),
                         ];
                         for line in raw.lines() {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                                if let Some(kind) = val.get("kind").and_then(|v| v.as_str()) {
-                                    match kind {
-                                        "MessageReceived" => {
-                                            let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("?");
-                                            let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                                            md_lines.push(format!("## {role}"));
-                                            md_lines.push(String::new());
-                                            md_lines.push(content.to_string());
-                                            md_lines.push(String::new());
-                                        }
-                                        "ToolCallStarted" => {
-                                            let tool = val.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
-                                            md_lines.push(format!("### tool: {tool}"));
-                                            md_lines.push(String::new());
-                                        }
-                                        _ => {}
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+                                && let Some(kind) = val.get("kind").and_then(|v| v.as_str())
+                            {
+                                match kind {
+                                    "MessageReceived" => {
+                                        let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+                                        let content =
+                                            val.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                        md_lines.push(format!("## {role}"));
+                                        md_lines.push(String::new());
+                                        md_lines.push(content.to_string());
+                                        md_lines.push(String::new());
                                     }
+                                    "ToolCallStarted" => {
+                                        let tool = val.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
+                                        md_lines.push(format!("### tool: {tool}"));
+                                        md_lines.push(String::new());
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -1450,13 +1450,12 @@ impl Repl {
                 }
             }
             _ => {
-                if command.starts_with('/') {
-                    if self
+                if command.starts_with('/')
+                    && self
                         .try_run_skill(command.trim_start_matches('/'), rest, &out)
                         .await?
-                    {
-                        return Ok(true);
-                    }
+                {
+                    return Ok(true);
                 }
                 out.eprintln(&format!("unknown command: {command}"));
             }
@@ -1558,10 +1557,10 @@ impl Repl {
 
         // Populate the git branch name immediately so it appears on first render.
         let workspace = self.runtime.workspace_root();
-        if let Some(branch) = git_current_branch(workspace) {
-            if let Ok(mut g) = tui_state.lock() {
-                g.set_current_branch(&branch);
-            }
+        if let Some(branch) = git_current_branch(workspace)
+            && let Ok(mut g) = tui_state.lock()
+        {
+            g.set_current_branch(&branch);
         }
 
         let rx = self
@@ -1616,13 +1615,13 @@ impl Repl {
         let approval_state = tui_state.clone();
         tokio::spawn(async move {
             while let Some((call_id, approved)) = approval_rx.recv().await {
-                if !dispatch_tool_approval(&approval_dispatch, &call_id, approved) {
-                    if let Ok(mut g) = approval_state.lock() {
-                        g.clear_active_approval_if_matches(&call_id);
-                        g.push_error(
-                            "approval was no longer pending; cleared stale approval state".into(),
-                        );
-                    }
+                if !dispatch_tool_approval(&approval_dispatch, &call_id, approved)
+                    && let Ok(mut g) = approval_state.lock()
+                {
+                    g.clear_active_approval_if_matches(&call_id);
+                    g.push_error(
+                        "approval was no longer pending; cleared stale approval state".into(),
+                    );
                 }
             }
         });
@@ -1882,14 +1881,13 @@ impl Repl {
                     } else {
                         None
                     };
-                    if let Some(qid) = qid {
-                        if !self.runtime.submit_question_answer(&qid, selection) {
-                            if let Ok(mut g) = tui_state.lock() {
-                                g.push_error(
-                                    "failed to submit answer (expired or already answered)".into(),
-                                );
-                            }
-                        }
+                    if let Some(qid) = qid
+                        && !self.runtime.submit_question_answer(&qid, selection)
+                        && let Ok(mut g) = tui_state.lock()
+                    {
+                        g.push_error(
+                            "failed to submit answer (expired or already answered)".into(),
+                        );
                     }
                 }
                 TuiCmd::Submit(line) => {
@@ -1946,12 +1944,12 @@ impl Repl {
                         }
                     }
                     if line.is_empty() {
-                        if let Ok(mut g) = tui_state.lock() {
-                            if g.pending_api_key_provider.take().is_some() {
-                                g.blocks.push(DisplayBlock::System(
-                                    "[apikey] entry cancelled (empty line)".into(),
-                                ));
-                            }
+                        if let Ok(mut g) = tui_state.lock()
+                            && g.pending_api_key_provider.take().is_some()
+                        {
+                            g.blocks.push(DisplayBlock::System(
+                                "[apikey] entry cancelled (empty line)".into(),
+                            ));
                         }
                         continue;
                     }
@@ -2038,10 +2036,10 @@ impl Repl {
                             .run_turn_with_images(&expanded, attachments)
                             .await
                     };
-                    if let Err(e) = turn {
-                        if let Ok(mut g) = tui_state.lock() {
-                            g.push_error(e.to_string());
-                        }
+                    if let Err(e) = turn
+                        && let Ok(mut g) = tui_state.lock()
+                    {
+                        g.push_error(e.to_string());
                     }
                     if let Ok(mut g) = tui_state.lock() {
                         g.set_busy(false);
@@ -2077,11 +2075,11 @@ impl Repl {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                if !stdout.is_empty() {
-                    if let Ok(mut g) = st.lock() {
-                        for line in stdout.lines() {
-                            g.blocks.push(DisplayBlock::System(line.to_string()));
-                        }
+                if !stdout.is_empty()
+                    && let Ok(mut g) = st.lock()
+                {
+                    for line in stdout.lines() {
+                        g.blocks.push(DisplayBlock::System(line.to_string()));
                     }
                 }
                 if !stderr.is_empty() {

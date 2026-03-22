@@ -2,16 +2,18 @@
 //!
 //! This module provides streaming event rendering with Claude Code-inspired styling.
 
+use crate::ipc_pending::{ApprovalPendingMap, QuestionPendingMap};
 use colored::Colorize;
 use nca_common::event::{AgentEvent, EventEnvelope, InteractiveQuestionPayload, QuestionSelection};
 use nca_runtime::ipc::IpcHandle;
 use nca_runtime::supervisor;
-use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::oneshot;
+
+type EventEnvelopeFn = Arc<dyn Fn(&EventEnvelope) + Send + Sync>;
 
 /// Blocking stdin prompt for `--no-tui` human stream when `ask_question` runs.
 fn prompt_question_stdio(q: &InteractiveQuestionPayload) -> io::Result<QuestionSelection> {
@@ -52,12 +54,13 @@ fn prompt_question_stdio(q: &InteractiveQuestionPayload) -> io::Result<QuestionS
         }
         return Ok(QuestionSelection::Custom { text: custom });
     }
-    if let Ok(n) = t.parse::<usize>() {
-        if n >= 1 && n <= q.options.len() {
-            return Ok(QuestionSelection::Option {
-                option_id: q.options[n - 1].id.clone(),
-            });
-        }
+    if let Ok(n) = t.parse::<usize>()
+        && n >= 1
+        && n <= q.options.len()
+    {
+        return Ok(QuestionSelection::Option {
+            option_id: q.options[n - 1].id.clone(),
+        });
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -136,8 +139,8 @@ pub fn spawn_stream_task(
     mode: StreamMode,
     log_path: std::path::PathBuf,
     ipc_handle: Option<IpcHandle>,
-    approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
-    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    approval_pending: Option<ApprovalPendingMap>,
+    question_pending: Option<QuestionPendingMap>,
     cancel_tx: Option<oneshot::Sender<()>>,
 ) -> tokio::task::JoinHandle<()> {
     let qp = question_pending.clone();
@@ -161,11 +164,11 @@ pub fn spawn_event_fanout_task(
     mode: StreamMode,
     log_path: std::path::PathBuf,
     event_tx_ipc: Option<tokio::sync::broadcast::Sender<String>>,
-    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    question_pending: Option<QuestionPendingMap>,
 ) -> tokio::task::JoinHandle<()> {
     let stats = StreamStats::new();
 
-    let on_event: Option<Arc<dyn Fn(&EventEnvelope) + Send + Sync>> = match mode {
+    let on_event: Option<EventEnvelopeFn> = match mode {
         StreamMode::Off => None,
         StreamMode::Ndjson => Some(Arc::new(|envelope: &EventEnvelope| {
             if let Ok(line) = serde_json::to_string(envelope) {
@@ -206,33 +209,31 @@ pub fn spawn_event_fanout_task(
                 let _ = ipc.event_tx.send(line);
             }
 
-            if let Some(file) = log_file.as_mut() {
-                if let Ok(line) = serde_json::to_string(&envelope) {
-                    let _ = file.write_all(line.as_bytes()).await;
-                    let _ = file.write_all(b"\n").await;
-                }
+            if let Some(file) = log_file.as_mut()
+                && let Ok(line) = serde_json::to_string(&envelope)
+            {
+                let _ = file.write_all(line.as_bytes()).await;
+                let _ = file.write_all(b"\n").await;
             }
 
             if let Some(ref cb) = on_event {
                 cb(&envelope);
             }
 
-            if let AgentEvent::QuestionRequested { ref question } = event {
-                if matches!(mode, StreamMode::Human) && std::io::stdin().is_terminal() {
-                    if let Some(ref pending) = qp {
-                        let q = question.clone();
-                        let qid = q.question_id.clone();
-                        let pending = pending.clone();
-                        if let Ok(Ok(sel)) =
-                            tokio::task::spawn_blocking(move || prompt_question_stdio(&q)).await
-                        {
-                            if let Ok(mut m) = pending.lock() {
-                                if let Some(tx) = m.remove(&qid) {
-                                    let _ = tx.send(sel);
-                                }
-                            }
-                        }
-                    }
+            if let AgentEvent::QuestionRequested { ref question } = event
+                && matches!(mode, StreamMode::Human)
+                && std::io::stdin().is_terminal()
+                && let Some(ref pending) = qp
+            {
+                let q = question.clone();
+                let qid = q.question_id.clone();
+                let pending = pending.clone();
+                if let Ok(Ok(sel)) =
+                    tokio::task::spawn_blocking(move || prompt_question_stdio(&q)).await
+                    && let Ok(mut m) = pending.lock()
+                    && let Some(tx) = m.remove(&qid)
+                {
+                    let _ = tx.send(sel);
                 }
             }
         }

@@ -224,9 +224,7 @@ impl ContextManager {
         let mut result = Vec::with_capacity(system_count + 10);
 
         // Add system messages
-        for i in 0..system_count {
-            result.push(messages[i].clone());
-        }
+        result.extend(messages.iter().take(system_count).cloned());
 
         // Insert summary as a special system message
         if !summary.trim().is_empty() {

@@ -111,12 +111,12 @@ impl ExperimentResult {
     /// Format for TSV logging
     pub fn to_tsv_row(&self) -> String {
         format!(
-            "{}\t{}\t{:.1}\t{}\t{}",
+            "{}\t{:.6}\t{:.1}\t{}\t{}",
             self.commit,
-            format!("{:.6}", self.metric_value),
+            self.metric_value,
             self.memory_gb,
             self.status,
-            self.description.replace('\t', " ").replace('\n', " ")
+            self.description.replace(['\t', '\n'], " ")
         )
     }
 
@@ -227,10 +227,10 @@ impl ResultsLogger {
         let mut lines = reader.lines();
 
         // Skip header
-        if let Some(Ok(line)) = lines.next() {
-            if line.trim() != RESULTS_TSV_HEADER.trim() {
-                anyhow::bail!("Invalid results file header");
-            }
+        if let Some(Ok(line)) = lines.next()
+            && line.trim() != RESULTS_TSV_HEADER.trim()
+        {
+            anyhow::bail!("Invalid results file header");
         }
 
         for line in lines {
@@ -321,8 +321,8 @@ impl ResultsLogger {
         println!(" Experiment Results ");
         println!("{:=<80}", "");
         println!(
-            "{:<8} {:>10} {:>10} {:>8}  {}",
-            "commit", "val_bpb", "mem_gb", "status", "description"
+            "{:<8} {:>10} {:>10} {:>8}  description",
+            "commit", "val_bpb", "mem_gb", "status"
         );
         println!("{:-<80}", "");
 

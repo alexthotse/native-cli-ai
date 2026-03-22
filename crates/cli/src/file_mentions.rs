@@ -43,12 +43,12 @@ pub fn discover_workspace_files(workspace: &Path) -> Vec<String> {
             };
             if ft.is_dir() {
                 stack.push((path, depth + 1));
-            } else if ft.is_file() {
-                if let Ok(rel) = path.strip_prefix(workspace) {
-                    let s = rel.to_string_lossy().replace('\\', "/");
-                    if !s.is_empty() && !s.starts_with("../") {
-                        out.push(s);
-                    }
+            } else if ft.is_file()
+                && let Ok(rel) = path.strip_prefix(workspace)
+            {
+                let s = rel.to_string_lossy().replace('\\', "/");
+                if !s.is_empty() && !s.starts_with("../") {
+                    out.push(s);
                 }
             }
         }

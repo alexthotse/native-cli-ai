@@ -192,7 +192,7 @@ impl AutoResearchLoop {
                 // Check if we should create or switch
                 let output = std::process::Command::new("git")
                     .current_dir(&self.experiment_config.working_dir)
-                    .args(&["rev-parse", "--verify", &format!("origin/{}", branch_name)])
+                    .args(["rev-parse", "--verify", &format!("origin/{}", branch_name)])
                     .output();
 
                 match output {
@@ -335,7 +335,7 @@ impl AutoResearchLoop {
             output.memory_gb,
             output.training_seconds,
             output.elapsed_seconds,
-            status.clone(),
+            status,
             description.to_string(),
         );
 
@@ -403,17 +403,17 @@ impl AutoResearchLoop {
             }
 
             // Check time limit
-            if let Some(start) = self.start_time {
-                if self.config.max_time_seconds > 0 {
-                    let elapsed = start.elapsed().as_secs();
-                    if elapsed >= self.config.max_time_seconds {
-                        tracing::info!(
-                            "Reached time limit ({} seconds)",
-                            self.config.max_time_seconds
-                        );
-                        self.set_state(LoopState::Completed);
-                        break;
-                    }
+            if let Some(start) = self.start_time
+                && self.config.max_time_seconds > 0
+            {
+                let elapsed = start.elapsed().as_secs();
+                if elapsed >= self.config.max_time_seconds {
+                    tracing::info!(
+                        "Reached time limit ({} seconds)",
+                        self.config.max_time_seconds
+                    );
+                    self.set_state(LoopState::Completed);
+                    break;
                 }
             }
 
@@ -481,10 +481,10 @@ impl AutoResearchLoop {
         }
 
         // Fall back to generic extraction
-        if let Some(metrics) = parser.extract_all(&output.output) {
-            if let Some(val_bpb) = metrics.val_bpb {
-                return Ok(val_bpb);
-            }
+        if let Some(metrics) = parser.extract_all(&output.output)
+            && let Some(val_bpb) = metrics.val_bpb
+        {
+            return Ok(val_bpb);
         }
 
         // If we have an explicit regex from the program, use that

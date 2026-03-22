@@ -4,7 +4,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 /// Top-level configuration, merged from global, workspace, env, and CLI sources.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NcaConfig {
     pub provider: ProviderConfig,
     pub model: ModelConfig,
@@ -18,23 +18,6 @@ pub struct NcaConfig {
     /// CLI/TUI preferences (e.g. external editor).
     #[serde(default)]
     pub ui: UiConfig,
-}
-
-impl Default for NcaConfig {
-    fn default() -> Self {
-        Self {
-            provider: ProviderConfig::default(),
-            model: ModelConfig::default(),
-            permissions: PermissionConfig::default(),
-            session: SessionConfig::default(),
-            harness: HarnessConfig::default(),
-            mcp: McpConfig::default(),
-            memory: MemoryConfig::default(),
-            hooks: HookConfig::default(),
-            web: WebConfig::default(),
-            ui: UiConfig::default(),
-        }
-    }
 }
 
 impl NcaConfig {
@@ -52,11 +35,11 @@ impl NcaConfig {
     pub fn load_for_workspace(workspace_root: &Path) -> Result<Self, ConfigError> {
         let mut config = Self::default();
 
-        if let Some(path) = global_config_path() {
-            if path.exists() {
-                let partial = load_partial(&path)?;
-                config.merge(partial);
-            }
+        if let Some(path) = global_config_path()
+            && path.exists()
+        {
+            let partial = load_partial(&path)?;
+            config.merge(partial);
         }
 
         let local_path = workspace_config_path(workspace_root);
@@ -72,11 +55,11 @@ impl NcaConfig {
     /// Load only the persisted global config file layered over defaults.
     pub fn load_global_file() -> Result<Self, ConfigError> {
         let mut config = Self::default();
-        if let Some(path) = global_config_path() {
-            if path.exists() {
-                let partial = load_partial(&path)?;
-                config.merge(partial);
-            }
+        if let Some(path) = global_config_path()
+            && path.exists()
+        {
+            let partial = load_partial(&path)?;
+            config.merge(partial);
         }
         Ok(config)
     }
@@ -94,7 +77,7 @@ impl NcaConfig {
 
     /// Save the full config as the user's global defaults.
     pub fn save_global(&self) -> Result<(), ConfigError> {
-        let path = global_config_path().ok_or_else(|| ConfigError::NoHomeDir)?;
+        let path = global_config_path().ok_or(ConfigError::NoHomeDir)?;
         save_config_to_path(self, &path)
     }
 
@@ -238,16 +221,16 @@ impl NcaConfig {
             self.memory.file_path = PathBuf::from(memory_path);
         }
 
-        if let Ok(timeout_secs) = env::var("NCA_WEB_TIMEOUT_SECS") {
-            if let Ok(timeout_secs) = timeout_secs.parse() {
-                self.web.timeout_secs = timeout_secs;
-            }
+        if let Ok(timeout_secs) = env::var("NCA_WEB_TIMEOUT_SECS")
+            && let Ok(timeout_secs) = timeout_secs.parse()
+        {
+            self.web.timeout_secs = timeout_secs;
         }
 
-        if let Ok(max_fetch_chars) = env::var("NCA_WEB_MAX_FETCH_CHARS") {
-            if let Ok(max_fetch_chars) = max_fetch_chars.parse() {
-                self.web.max_fetch_chars = max_fetch_chars;
-            }
+        if let Ok(max_fetch_chars) = env::var("NCA_WEB_MAX_FETCH_CHARS")
+            && let Ok(max_fetch_chars) = max_fetch_chars.parse()
+        {
+            self.web.max_fetch_chars = max_fetch_chars;
         }
 
         self.sync_default_model_from_provider();
@@ -940,20 +923,15 @@ impl PermissionConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
+    #[default]
     Default,
     Plan,
     AcceptEdits,
     DontAsk,
     BypassPermissions,
-}
-
-impl Default for PermissionMode {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -991,7 +969,7 @@ pub struct HarnessConfig {
     pub skill_directories: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpConfig {
     #[serde(default)]
     pub expose_in_safe_mode: bool,
@@ -1163,15 +1141,6 @@ impl HarnessConfig {
         }
         if let Some(skill_directories) = partial.skill_directories {
             self.skill_directories = skill_directories;
-        }
-    }
-}
-
-impl Default for McpConfig {
-    fn default() -> Self {
-        Self {
-            expose_in_safe_mode: false,
-            servers: Vec::new(),
         }
     }
 }

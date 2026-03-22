@@ -30,6 +30,10 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
+pub type ApprovalPendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
+pub type QuestionPendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>;
+type EventFanoutCallback = Box<dyn Fn(&EventEnvelope) + Send>;
+
 /// Reusable runtime supervisor that owns session lifecycle, IPC, event fanout,
 /// and command handling.
 pub struct Supervisor {
@@ -44,8 +48,8 @@ pub struct Supervisor {
     session_store: SessionStore,
     ipc_handle: Option<IpcHandle>,
     event_rx: Option<mpsc::Receiver<AgentEvent>>,
-    approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
-    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    approval_pending: Option<ApprovalPendingMap>,
+    question_pending: Option<QuestionPendingMap>,
     spawn_rx: Option<mpsc::Receiver<SpawnRequest>>,
     worktree_path: Option<PathBuf>,
     branch: Option<String>,
@@ -84,8 +88,8 @@ pub struct SupervisorHandle {
     pub event_log_path: PathBuf,
     event_rx: Option<mpsc::Receiver<AgentEvent>>,
     ipc_handle: Option<IpcHandle>,
-    approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
-    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    approval_pending: Option<ApprovalPendingMap>,
+    question_pending: Option<QuestionPendingMap>,
     spawn_rx: Option<mpsc::Receiver<SpawnRequest>>,
 }
 
@@ -98,15 +102,11 @@ impl SupervisorHandle {
         self.ipc_handle.take()
     }
 
-    pub fn take_approval_pending(
-        &mut self,
-    ) -> Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>> {
+    pub fn take_approval_pending(&mut self) -> Option<ApprovalPendingMap> {
         self.approval_pending.take()
     }
 
-    pub fn take_question_pending(
-        &mut self,
-    ) -> Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>> {
+    pub fn take_question_pending(&mut self) -> Option<QuestionPendingMap> {
         self.question_pending.take()
     }
 
@@ -154,7 +154,7 @@ impl Supervisor {
             tools.register(Box::new(SpawnSubagentTool::new(spawn_tx)));
         }
 
-        let approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>;
+        let approval_pending: Option<ApprovalPendingMap>;
         let approval = if cfg.interactive_approvals {
             match cfg.approval_handler {
                 Some(handler) => {
@@ -250,10 +250,10 @@ impl Supervisor {
             context_manager,
             last_summary_at_tokens: 0,
         };
-        sup.save().await.map_err(|e| ProviderError::Other(e))?;
+        sup.save().await.map_err(ProviderError::Other)?;
         sup.update_last_session()
             .await
-            .map_err(|e| ProviderError::Other(e))?;
+            .map_err(ProviderError::Other)?;
         sup.run_session_hook(HookEventKind::SessionStart, json!(sup.snapshot()))
             .await;
         Ok(sup)
@@ -366,10 +366,10 @@ impl Supervisor {
         self.check_and_summarize_context().await;
 
         self.refresh_session_summary();
-        self.save().await.map_err(|e| ProviderError::Other(e))?;
+        self.save().await.map_err(ProviderError::Other)?;
         self.update_last_session()
             .await
-            .map_err(|e| ProviderError::Other(e))?;
+            .map_err(ProviderError::Other)?;
         Ok(output)
     }
 
@@ -408,17 +408,17 @@ impl Supervisor {
         }
 
         let stats = self.context_manager.stats(&self.agent.messages);
-        if stats.needs_attention {
-            if let Some(tx) = self.agent.event_sender() {
-                let _ = tx
-                    .send(AgentEvent::ContextWarning {
-                        message: format!(
-                            "Context window at {}% ({} tokens). Consider summarizing.",
-                            stats.usage_percent, stats.estimated_tokens
-                        ),
-                    })
-                    .await;
-            }
+        if stats.needs_attention
+            && let Some(tx) = self.agent.event_sender()
+        {
+            let _ = tx
+                .send(AgentEvent::ContextWarning {
+                    message: format!(
+                        "Context window at {}% ({} tokens). Consider summarizing.",
+                        stats.usage_percent, stats.estimated_tokens
+                    ),
+                })
+                .await;
         }
     }
 
@@ -868,7 +868,7 @@ pub fn spawn_event_fanout(
     mut event_rx: mpsc::Receiver<AgentEvent>,
     log_path: PathBuf,
     ipc_handle: Option<IpcHandle>,
-    on_event: Option<Box<dyn Fn(&EventEnvelope) + Send>>,
+    on_event: Option<EventFanoutCallback>,
     parent_forward: Option<(String, mpsc::Sender<AgentEvent>)>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -890,10 +890,10 @@ pub fn spawn_event_fanout(
         let mut event_id: u64 = 0;
         while let Some(event) = event_rx.recv().await {
             event_id += 1;
-            if let Some((ref child_id, ref ptx)) = parent_forward {
-                if let Some(fwd) = map_child_event_for_parent_broadcast(child_id, &event) {
-                    let _ = ptx.send(fwd).await;
-                }
+            if let Some((ref child_id, ref ptx)) = parent_forward
+                && let Some(fwd) = map_child_event_for_parent_broadcast(child_id, &event)
+            {
+                let _ = ptx.send(fwd).await;
             }
             let envelope = EventEnvelope::new(event_id, event);
             if let Some(ref tx) = event_tx {
@@ -901,11 +901,11 @@ pub fn spawn_event_fanout(
                 let _ = tx.send(line);
             }
 
-            if let Some(file) = log_file.as_mut() {
-                if let Ok(line) = serde_json::to_string(&envelope) {
-                    let _ = file.write_all(line.as_bytes()).await;
-                    let _ = file.write_all(b"\n").await;
-                }
+            if let Some(file) = log_file.as_mut()
+                && let Ok(line) = serde_json::to_string(&envelope)
+            {
+                let _ = file.write_all(line.as_bytes()).await;
+                let _ = file.write_all(b"\n").await;
             }
 
             if let Some(ref cb) = on_event {
@@ -918,8 +918,8 @@ pub fn spawn_event_fanout(
 /// Spawns a task that consumes IPC commands and resolves approvals/cancellation.
 pub fn spawn_command_consumer(
     command_rx: mpsc::UnboundedReceiver<AgentCommand>,
-    approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
-    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    approval_pending: Option<ApprovalPendingMap>,
+    question_pending: Option<QuestionPendingMap>,
     cancel_tx: Option<oneshot::Sender<()>>,
 ) -> tokio::task::JoinHandle<()> {
     spawn_command_consumer_with_store(
@@ -942,8 +942,8 @@ pub enum SessionControlCommand {
 /// Extended command consumer with optional event fanout, prompt forwarding, and session control.
 pub fn spawn_command_consumer_with_store(
     mut command_rx: mpsc::UnboundedReceiver<AgentCommand>,
-    approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
-    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    approval_pending: Option<ApprovalPendingMap>,
+    question_pending: Option<QuestionPendingMap>,
     cancel_tx: Option<oneshot::Sender<()>>,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
     prompt_tx: Option<mpsc::UnboundedSender<String>>,
@@ -954,21 +954,19 @@ pub fn spawn_command_consumer_with_store(
         while let Some(cmd) = command_rx.recv().await {
             match cmd {
                 AgentCommand::ApproveToolCall { call_id } => {
-                    if let Some(ref p) = approval_pending {
-                        if let Ok(mut m) = p.lock() {
-                            if let Some(tx) = m.remove(&call_id) {
-                                let _ = tx.send(true);
-                            }
-                        }
+                    if let Some(ref p) = approval_pending
+                        && let Ok(mut m) = p.lock()
+                        && let Some(tx) = m.remove(&call_id)
+                    {
+                        let _ = tx.send(true);
                     }
                 }
                 AgentCommand::DenyToolCall { call_id } => {
-                    if let Some(ref p) = approval_pending {
-                        if let Ok(mut m) = p.lock() {
-                            if let Some(tx) = m.remove(&call_id) {
-                                let _ = tx.send(false);
-                            }
-                        }
+                    if let Some(ref p) = approval_pending
+                        && let Ok(mut m) = p.lock()
+                        && let Some(tx) = m.remove(&call_id)
+                    {
+                        let _ = tx.send(false);
                     }
                 }
                 AgentCommand::Cancel => {
@@ -1016,12 +1014,11 @@ pub fn spawn_command_consumer_with_store(
                     question_id,
                     selection,
                 } => {
-                    if let Some(ref qp) = question_pending {
-                        if let Ok(mut m) = qp.lock() {
-                            if let Some(tx) = m.remove(&question_id) {
-                                let _ = tx.send(selection);
-                            }
-                        }
+                    if let Some(ref qp) = question_pending
+                        && let Ok(mut m) = qp.lock()
+                        && let Some(tx) = m.remove(&question_id)
+                    {
+                        let _ = tx.send(selection);
                     }
                 }
             }
@@ -1032,7 +1029,7 @@ pub fn spawn_command_consumer_with_store(
 /// IPC-based approval handler that waits for approve/deny commands from
 /// connected clients (e.g. CLI over the session socket).
 pub struct IpcApprovalHandler {
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pending: ApprovalPendingMap,
 }
 
 impl IpcApprovalHandler {
@@ -1042,7 +1039,7 @@ impl IpcApprovalHandler {
         })
     }
 
-    pub fn pending(&self) -> Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>> {
+    pub fn pending(&self) -> ApprovalPendingMap {
         self.pending.clone()
     }
 }
@@ -1116,11 +1113,7 @@ pub async fn cleanup_stale_sessions(session_store: &SessionStore) {
             continue;
         }
 
-        let pid_alive = session
-            .meta
-            .pid
-            .map(|pid| is_pid_alive(pid))
-            .unwrap_or(false);
+        let pid_alive = session.meta.pid.map(is_pid_alive).unwrap_or(false);
 
         let socket_exists = session
             .meta
@@ -1268,15 +1261,14 @@ pub fn spawn_subagent_consumer(
 
 /// Append a child session ID to the parent session's metadata on disk.
 async fn append_child_to_parent(store: &SessionStore, parent_id: &str, child_id: &str) {
-    if let Ok(mut parent) = store.load(parent_id).await {
-        if !parent
+    if let Ok(mut parent) = store.load(parent_id).await
+        && !parent
             .meta
             .child_session_ids
             .contains(&child_id.to_string())
-        {
-            parent.meta.child_session_ids.push(child_id.to_string());
-            let _ = store.save(&parent).await;
-        }
+    {
+        parent.meta.child_session_ids.push(child_id.to_string());
+        let _ = store.save(&parent).await;
     }
 }
 
@@ -1420,11 +1412,7 @@ pub async fn spawn_child_session(
     let log_path = handle.event_log_path.clone();
 
     let parent_forward = event_tx.map(|tx| (child_id.clone(), tx));
-    let fanout = if let Some(rx) = event_rx {
-        Some(spawn_event_fanout(rx, log_path, None, None, parent_forward))
-    } else {
-        None
-    };
+    let fanout = event_rx.map(|rx| spawn_event_fanout(rx, log_path, None, None, parent_forward));
 
     let result = sup.run_turn(&context_prompt).await;
 

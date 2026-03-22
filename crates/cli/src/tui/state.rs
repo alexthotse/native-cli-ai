@@ -417,10 +417,10 @@ impl TuiSessionState {
     }
 
     fn flush_stream_before_tool(&mut self) {
-        if let Some(s) = self.streaming_assistant.take() {
-            if !s.trim().is_empty() {
-                self.blocks.push(DisplayBlock::Assistant(s));
-            }
+        if let Some(s) = self.streaming_assistant.take()
+            && !s.trim().is_empty()
+        {
+            self.blocks.push(DisplayBlock::Assistant(s));
         }
     }
 
@@ -699,10 +699,10 @@ fn format_spawn_subagent_input(v: &Value) -> String {
 }
 
 fn format_tool_input(value: &Value) -> String {
-    if let Some(raw) = value.as_str() {
-        if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
-            return serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.to_string());
-        }
+    if let Some(raw) = value.as_str()
+        && let Ok(parsed) = serde_json::from_str::<Value>(raw)
+    {
+        return serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.to_string());
     }
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }

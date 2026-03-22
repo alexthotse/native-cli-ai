@@ -31,6 +31,7 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Box<dyn Provider>,
         tools: ToolRegistry,
@@ -309,8 +310,8 @@ impl AgentLoop {
                         .await;
 
                         if approved {
-                            if let Some(hooks) = &self.hooks {
-                                if let Err(reason) = hooks
+                            if let Some(hooks) = &self.hooks
+                                && let Err(reason) = hooks
                                     .run(
                                         HookEventKind::PreToolUse,
                                         Some(&call.name),
@@ -321,15 +322,14 @@ impl AgentLoop {
                                         }),
                                     )
                                     .await
-                                {
-                                    tickets.push(Ticket::Resolved(ToolResult {
-                                        call_id: call.id.clone(),
-                                        success: false,
-                                        output: String::new(),
-                                        error: Some(reason),
-                                    }));
-                                    continue;
-                                }
+                            {
+                                tickets.push(Ticket::Resolved(ToolResult {
+                                    call_id: call.id.clone(),
+                                    success: false,
+                                    output: String::new(),
+                                    error: Some(reason),
+                                }));
+                                continue;
                             }
                             tickets.push(Ticket::Execute(call.clone()));
                         } else {
@@ -357,8 +357,8 @@ impl AgentLoop {
                     }
 
                     PermissionTier::Allowed => {
-                        if let Some(hooks) = &self.hooks {
-                            if let Err(reason) = hooks
+                        if let Some(hooks) = &self.hooks
+                            && let Err(reason) = hooks
                                 .run(
                                     HookEventKind::PreToolUse,
                                     Some(&call.name),
@@ -369,15 +369,14 @@ impl AgentLoop {
                                     }),
                                 )
                                 .await
-                            {
-                                tickets.push(Ticket::Resolved(ToolResult {
-                                    call_id: call.id.clone(),
-                                    success: false,
-                                    output: String::new(),
-                                    error: Some(reason),
-                                }));
-                                continue;
-                            }
+                        {
+                            tickets.push(Ticket::Resolved(ToolResult {
+                                call_id: call.id.clone(),
+                                success: false,
+                                output: String::new(),
+                                error: Some(reason),
+                            }));
+                            continue;
                         }
                         tickets.push(Ticket::Execute(call.clone()));
                     }
@@ -536,14 +535,14 @@ fn cleanup_processed_attachments(
 
     for attachment in attachments {
         let full_path = workspace_root.join(&attachment.path);
-        if let Err(err) = std::fs::remove_file(&full_path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(
-                    "failed to remove processed image attachment {}: {}",
-                    full_path.display(),
-                    err
-                );
-            }
+        if let Err(err) = std::fs::remove_file(&full_path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                "failed to remove processed image attachment {}: {}",
+                full_path.display(),
+                err
+            );
         }
         if let Some(parent) = full_path.parent() {
             let _ = std::fs::remove_dir(parent);

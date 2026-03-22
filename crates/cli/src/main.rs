@@ -2,6 +2,7 @@ mod approval_prompts;
 mod cli_index;
 mod file_mentions;
 mod image_attach;
+mod ipc_pending;
 mod prompt;
 mod repl;
 mod runner;
@@ -22,7 +23,7 @@ use nca_runtime::memory_store::{MemoryNote, MemoryStore};
 use repl::Repl;
 use runner::{build_resumed_session_runtime, build_session_runtime};
 use std::io::{IsTerminal, stdin, stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use stream::{StreamMode, spawn_stream_task};
 
@@ -389,11 +390,13 @@ async fn try_main() -> anyhow::Result<()> {
                 config,
                 &workspace_root,
                 &prompt,
-                stream,
-                json,
-                safe,
-                session_id,
-                orchestration_context.clone(),
+                OneShotOptions {
+                    stream,
+                    json,
+                    safe,
+                    session_id,
+                    orchestration_context: orchestration_context.clone(),
+                },
             )
             .await?;
         }
@@ -579,11 +582,13 @@ async fn try_main() -> anyhow::Result<()> {
                         config,
                         &workspace_root,
                         prompt,
-                        cli.stream,
-                        cli.json,
-                        cli.safe,
-                        cli.session_id,
-                        orchestration_context.clone(),
+                        OneShotOptions {
+                            stream: cli.stream,
+                            json: cli.json,
+                            safe: cli.safe,
+                            session_id: cli.session_id,
+                            orchestration_context: orchestration_context.clone(),
+                        },
                     )
                     .await?;
                 }
@@ -632,20 +637,18 @@ async fn try_main() -> anyhow::Result<()> {
                 )
                 .await
                 .map_err(anyhow::Error::msg)?;
-                if !use_tui {
-                    if let Some(rx) = runtime.take_event_rx() {
-                        let ipc_handle = runtime.take_ipc_handle();
-                        let approval_pending = runtime.take_ipc_approval_pending();
-                        let _stream_task = spawn_stream_task(
-                            rx,
-                            cli.stream,
-                            runtime.event_log_path(),
-                            ipc_handle,
-                            approval_pending,
-                            runtime.question_pending(),
-                            None,
-                        );
-                    }
+                if !use_tui && let Some(rx) = runtime.take_event_rx() {
+                    let ipc_handle = runtime.take_ipc_handle();
+                    let approval_pending = runtime.take_ipc_approval_pending();
+                    let _stream_task = spawn_stream_task(
+                        rx,
+                        cli.stream,
+                        runtime.event_log_path(),
+                        ipc_handle,
+                        approval_pending,
+                        runtime.question_pending(),
+                        None,
+                    );
                 }
                 let mut repl = Repl::new(runtime, cli.safe, cli.run);
                 if use_tui {
@@ -702,20 +705,18 @@ async fn try_main() -> anyhow::Result<()> {
                     )
                     .await
                     .map_err(anyhow::Error::msg)?;
-                    if !use_tui {
-                        if let Some(rx) = runtime.take_event_rx() {
-                            let ipc_handle = runtime.take_ipc_handle();
-                            let approval_pending = runtime.take_ipc_approval_pending();
-                            let _stream_task = spawn_stream_task(
-                                rx,
-                                cli.stream,
-                                runtime.event_log_path(),
-                                ipc_handle,
-                                approval_pending,
-                                runtime.question_pending(),
-                                None,
-                            );
-                        }
+                    if !use_tui && let Some(rx) = runtime.take_event_rx() {
+                        let ipc_handle = runtime.take_ipc_handle();
+                        let approval_pending = runtime.take_ipc_approval_pending();
+                        let _stream_task = spawn_stream_task(
+                            rx,
+                            cli.stream,
+                            runtime.event_log_path(),
+                            ipc_handle,
+                            approval_pending,
+                            runtime.question_pending(),
+                            None,
+                        );
                     }
                     let mut repl = Repl::new(runtime, cli.safe, cli.run);
                     if use_tui {
@@ -731,16 +732,27 @@ async fn try_main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_one_shot(
-    config: NcaConfig,
-    workspace_root: &PathBuf,
-    prompt: &str,
+struct OneShotOptions {
     stream: StreamMode,
     json: bool,
     safe: bool,
     session_id: Option<String>,
     orchestration_context: Option<OrchestrationContext>,
+}
+
+async fn run_one_shot(
+    config: NcaConfig,
+    workspace_root: &Path,
+    prompt: &str,
+    opts: OneShotOptions,
 ) -> anyhow::Result<()> {
+    let OneShotOptions {
+        stream,
+        json,
+        safe,
+        session_id,
+        orchestration_context,
+    } = opts;
     let mut runtime = build_session_runtime(
         config.clone(),
         workspace_root,
@@ -765,18 +777,16 @@ async fn run_one_shot(
             None,
         );
 
-        let spawn_task = if let Some(spawn_rx) = runtime.take_spawn_rx() {
-            Some(nca_runtime::supervisor::spawn_subagent_consumer(
+        let spawn_task = runtime.take_spawn_rx().map(|spawn_rx| {
+            nca_runtime::supervisor::spawn_subagent_consumer(
                 spawn_rx,
                 runtime.session_id().to_string(),
                 runtime.workspace_root().to_path_buf(),
                 config.clone(),
                 runtime.messages().to_vec(),
                 None,
-            ))
-        } else {
-            None
-        };
+            )
+        });
 
         let result = runtime.run_turn(prompt).await;
         let outcome = match result {
@@ -817,7 +827,7 @@ async fn run_one_shot(
 
 async fn run_service_session(
     config: NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     initial_prompt: Option<String>,
     stream: StreamMode,
     safe: bool,
@@ -827,7 +837,7 @@ async fn run_service_session(
     let _ = stream;
     nca_runtime::service::run_service_session(nca_runtime::service::ServiceSessionRequest {
         config,
-        workspace_root: workspace_root.clone(),
+        workspace_root: workspace_root.to_path_buf(),
         safe_mode: safe,
         initial_prompt,
         orchestration_context,
@@ -838,7 +848,7 @@ async fn run_service_session(
 }
 
 async fn spawn_run(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     prompt: &str,
     model: Option<String>,
     safe: bool,
@@ -894,7 +904,7 @@ async fn spawn_run(
 
 async fn list_sessions(
     config: &NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     json: bool,
     status_filter: Option<SessionStatusFilter>,
     since_hours: Option<u32>,
@@ -919,14 +929,11 @@ async fn list_sessions(
 
     // Apply status filter
     if let Some(status) = status_filter {
-        sessions.retain(|s| {
-            let status_match = match status {
-                SessionStatusFilter::Running => matches!(s.status, SessionStatus::Running),
-                SessionStatusFilter::Completed => matches!(s.status, SessionStatus::Completed),
-                SessionStatusFilter::Cancelled => matches!(s.status, SessionStatus::Cancelled),
-                SessionStatusFilter::Failed => matches!(s.status, SessionStatus::Error),
-            };
-            status_match
+        sessions.retain(|s| match status {
+            SessionStatusFilter::Running => matches!(s.status, SessionStatus::Running),
+            SessionStatusFilter::Completed => matches!(s.status, SessionStatus::Completed),
+            SessionStatusFilter::Cancelled => matches!(s.status, SessionStatus::Cancelled),
+            SessionStatusFilter::Failed => matches!(s.status, SessionStatus::Error),
         });
     }
 
@@ -979,7 +986,7 @@ async fn list_sessions(
     Ok(())
 }
 
-async fn latest_session_id(config: &NcaConfig, workspace_root: &PathBuf) -> anyhow::Result<String> {
+async fn latest_session_id(config: &NcaConfig, workspace_root: &Path) -> anyhow::Result<String> {
     let store = nca_runtime::session_store::SessionStore::new(
         workspace_root.join(&config.session.history_dir),
     );
@@ -1007,7 +1014,7 @@ async fn latest_session_id(config: &NcaConfig, workspace_root: &PathBuf) -> anyh
 
 async fn resume_session(
     config: NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     session_id: &str,
     prompt: Option<String>,
     safe: bool,
@@ -1056,20 +1063,18 @@ async fn resume_session(
         return Ok(());
     }
 
-    if !use_tui {
-        if let Some(rx) = runtime.take_event_rx() {
-            let ipc_handle = runtime.take_ipc_handle();
-            let approval_pending = runtime.take_ipc_approval_pending();
-            let _stream_task = spawn_stream_task(
-                rx,
-                stream,
-                runtime.event_log_path(),
-                ipc_handle,
-                approval_pending,
-                runtime.question_pending(),
-                None,
-            );
-        }
+    if !use_tui && let Some(rx) = runtime.take_event_rx() {
+        let ipc_handle = runtime.take_ipc_handle();
+        let approval_pending = runtime.take_ipc_approval_pending();
+        let _stream_task = spawn_stream_task(
+            rx,
+            stream,
+            runtime.event_log_path(),
+            ipc_handle,
+            approval_pending,
+            runtime.question_pending(),
+            None,
+        );
     }
     let mut repl = Repl::new(runtime, safe, true);
     if use_tui {
@@ -1082,7 +1087,7 @@ async fn resume_session(
 
 async fn show_logs(
     config: &NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     session_id: &str,
     follow: bool,
     json: bool,
@@ -1095,7 +1100,7 @@ async fn show_logs(
 
 async fn attach_session(
     config: &NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     session_id: &str,
     json: bool,
 ) -> anyhow::Result<()> {
@@ -1119,7 +1124,7 @@ async fn attach_session(
 
 async fn show_status(
     config: &NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     session_id: &str,
     json: bool,
 ) -> anyhow::Result<()> {
@@ -1140,7 +1145,7 @@ async fn show_status(
 
 async fn cancel_session(
     config: &NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     session_id: &str,
     json: bool,
 ) -> anyhow::Result<()> {
@@ -1182,7 +1187,7 @@ async fn cancel_session(
 
 async fn print_log_file(
     config: &NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     session_id: &str,
     json: bool,
 ) -> anyhow::Result<()> {
@@ -1227,7 +1232,7 @@ fn print_event_envelope(envelope: &EventEnvelope, json: bool) -> anyhow::Result<
     Ok(())
 }
 
-fn list_skills(config: &NcaConfig, workspace_root: &PathBuf, json: bool) -> anyhow::Result<()> {
+fn list_skills(config: &NcaConfig, workspace_root: &Path, json: bool) -> anyhow::Result<()> {
     let skills = SkillCatalog::discover(workspace_root, &config.harness.skill_directories)
         .map_err(anyhow::Error::msg)?;
     if json {
@@ -1276,11 +1281,7 @@ fn list_mcp_servers(config: &NcaConfig, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn show_memory(
-    config: &NcaConfig,
-    workspace_root: &PathBuf,
-    json: bool,
-) -> anyhow::Result<()> {
+async fn show_memory(config: &NcaConfig, workspace_root: &Path, json: bool) -> anyhow::Result<()> {
     let store = workspace_memory_store(config, workspace_root);
     let state = store.load().await.map_err(anyhow::Error::msg)?;
     if json {
@@ -1303,7 +1304,7 @@ async fn show_memory(
 
 async fn add_memory_note(
     config: &NcaConfig,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     kind: &str,
     text: &str,
     json: bool,
@@ -1376,7 +1377,7 @@ fn show_models(config: &NcaConfig, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn show_doctor(config: &NcaConfig, workspace_root: &PathBuf, json: bool) -> anyhow::Result<()> {
+fn show_doctor(config: &NcaConfig, workspace_root: &Path, json: bool) -> anyhow::Result<()> {
     let skills = SkillCatalog::discover(workspace_root, &config.harness.skill_directories)
         .map(|skills| skills.len())
         .unwrap_or(0);
@@ -1491,7 +1492,7 @@ async fn autoresearch_once(program: PathBuf, workspace: PathBuf) -> anyhow::Resu
     Ok(())
 }
 
-fn show_config(config: &NcaConfig, workspace_root: &PathBuf, json: bool) -> anyhow::Result<()> {
+fn show_config(config: &NcaConfig, workspace_root: &Path, json: bool) -> anyhow::Result<()> {
     if json {
         print_json(config, false)?;
     } else {
@@ -1536,7 +1537,7 @@ fn show_config(config: &NcaConfig, workspace_root: &PathBuf, json: bool) -> anyh
     Ok(())
 }
 
-fn workspace_memory_store(config: &NcaConfig, workspace_root: &PathBuf) -> MemoryStore {
+fn workspace_memory_store(config: &NcaConfig, workspace_root: &Path) -> MemoryStore {
     if config.memory.file_path.is_absolute() {
         MemoryStore::new(config.memory.file_path.clone())
     } else {

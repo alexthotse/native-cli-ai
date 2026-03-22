@@ -77,13 +77,12 @@ impl SkillCatalog {
                 if !skill_file.exists() {
                     continue;
                 }
-                if let Ok(skill) = parse_skill_file(&skill_file) {
-                    if !skills
+                if let Ok(skill) = parse_skill_file(&skill_file)
+                    && !skills
                         .iter()
                         .any(|existing: &Skill| existing.command == skill.command)
-                    {
-                        skills.push(skill);
-                    }
+                {
+                    skills.push(skill);
                 }
             }
         }
@@ -181,14 +180,14 @@ fn parse_skill_file(path: &Path) -> Result<Skill, String> {
 }
 
 fn split_frontmatter(raw: &str) -> Result<(SkillFrontmatter, String), String> {
-    if let Some(rest) = raw.strip_prefix("---\n") {
-        if let Some(end) = rest.find("\n---\n") {
-            let yaml = &rest[..end];
-            let body = &rest[end + 5..];
-            let fm = serde_yaml::from_str::<SkillFrontmatter>(yaml)
-                .map_err(|err| format!("failed to parse skill frontmatter: {err}"))?;
-            return Ok((fm, body.to_string()));
-        }
+    if let Some(rest) = raw.strip_prefix("---\n")
+        && let Some(end) = rest.find("\n---\n")
+    {
+        let yaml = &rest[..end];
+        let body = &rest[end + 5..];
+        let fm = serde_yaml::from_str::<SkillFrontmatter>(yaml)
+            .map_err(|err| format!("failed to parse skill frontmatter: {err}"))?;
+        return Ok((fm, body.to_string()));
     }
     Ok((SkillFrontmatter::default(), raw.to_string()))
 }
@@ -255,7 +254,7 @@ fn parse_agents_md(workspace_root: &Path) -> Result<Vec<Skill>, String> {
                 if let Some(skill) = build_skill_from_section(
                     &current_heading,
                     &frontmatter_lines.join("\n"),
-                    &current_content.trim(),
+                    current_content.trim(),
                     workspace_root,
                 ) {
                     skills.push(skill);
@@ -267,10 +266,8 @@ fn parse_agents_md(workspace_root: &Path) -> Result<Vec<Skill>, String> {
             current_content.clear();
         } else if line.trim().is_empty() {
             // Empty line - if in frontmatter, stay in frontmatter; otherwise accumulate
-            if !in_frontmatter {
-                if !current_content.is_empty() || !current_heading.is_empty() {
-                    current_content.push('\n');
-                }
+            if !in_frontmatter && (!current_content.is_empty() || !current_heading.is_empty()) {
+                current_content.push('\n');
             }
         } else if line.starts_with("- ") && !in_frontmatter && frontmatter_lines.is_empty() {
             // First directive line - check if it's a skill frontmatter directive
@@ -302,15 +299,15 @@ fn parse_agents_md(workspace_root: &Path) -> Result<Vec<Skill>, String> {
     }
 
     // Don't forget the last section
-    if !current_heading.is_empty() {
-        if let Some(skill) = build_skill_from_section(
+    if !current_heading.is_empty()
+        && let Some(skill) = build_skill_from_section(
             &current_heading,
             &frontmatter_lines.join("\n"),
-            &current_content.trim(),
+            current_content.trim(),
             workspace_root,
-        ) {
-            skills.push(skill);
-        }
+        )
+    {
+        skills.push(skill);
     }
 
     Ok(skills)

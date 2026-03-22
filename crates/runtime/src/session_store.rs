@@ -65,10 +65,10 @@ impl SessionStore {
             .await
             .map_err(|e| SessionStoreError::Io(e.to_string()))?
         {
-            if let Some(name) = entry.file_name().to_str() {
-                if let Some(id) = name.strip_suffix(".json") {
-                    ids.push(id.to_string());
-                }
+            if let Some(name) = entry.file_name().to_str()
+                && let Some(id) = name.strip_suffix(".json")
+            {
+                ids.push(id.to_string());
             }
         }
 

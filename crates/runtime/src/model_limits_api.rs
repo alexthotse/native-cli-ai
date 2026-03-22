@@ -179,13 +179,14 @@ async fn fetch_openrouter_context(
     let ttl = catalog_cache_ttl();
     {
         let guard = openrouter_catalog_cache().lock().ok()?;
-        if let Some(entry) = guard.as_ref() {
-            if entry.url == url && !cache_stale(entry.fetched_at, ttl) {
-                tracing::debug!(url = %url, "openrouter models catalog cache hit");
-                return pick_openrouter(entry.models.as_ref(), model)
-                    .and_then(|m| m.context_length)
-                    .map(|n| n as usize);
-            }
+        if let Some(entry) = guard.as_ref()
+            && entry.url == url
+            && !cache_stale(entry.fetched_at, ttl)
+        {
+            tracing::debug!(url = %url, "openrouter models catalog cache hit");
+            return pick_openrouter(entry.models.as_ref(), model)
+                .and_then(|m| m.context_length)
+                .map(|n| n as usize);
         }
     }
 
@@ -254,13 +255,14 @@ async fn fetch_anthropic_context(
     let cache_key = format!("anthropic|{}|{:x}", base, api_key_tag(api_key));
     {
         let guard = anthropic_catalog_cache().lock().ok()?;
-        if let Some(entry) = guard.as_ref() {
-            if entry.cache_key == cache_key && !cache_stale(entry.fetched_at, ttl) {
-                tracing::debug!("anthropic models catalog cache hit");
-                return pick_anthropic(entry.models.as_ref(), model)
-                    .and_then(|m| m.max_input_tokens)
-                    .map(|n| n as usize);
-            }
+        if let Some(entry) = guard.as_ref()
+            && entry.cache_key == cache_key
+            && !cache_stale(entry.fetched_at, ttl)
+        {
+            tracing::debug!("anthropic models catalog cache hit");
+            return pick_anthropic(entry.models.as_ref(), model)
+                .and_then(|m| m.max_input_tokens)
+                .map(|n| n as usize);
         }
     }
 
@@ -352,11 +354,12 @@ async fn fetch_openai_context(
     let cache_key = format!("openai|{}|{:x}", base, api_key_tag(api_key));
     {
         let guard = openai_catalog_cache().lock().ok()?;
-        if let Some(entry) = guard.as_ref() {
-            if entry.cache_key == cache_key && !cache_stale(entry.fetched_at, ttl) {
-                tracing::debug!("openai models catalog cache hit");
-                return openai_context_from_catalog(entry.value.as_ref(), model);
-            }
+        if let Some(entry) = guard.as_ref()
+            && entry.cache_key == cache_key
+            && !cache_stale(entry.fetched_at, ttl)
+        {
+            tracing::debug!("openai models catalog cache hit");
+            return openai_context_from_catalog(entry.value.as_ref(), model);
         }
     }
 
@@ -410,12 +413,13 @@ async fn fetch_openrouter_model_ids(client: &reqwest::Client, config: &NcaConfig
     // Check cache first
     {
         let guard = openrouter_catalog_cache().lock().ok();
-        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref()) {
-            if entry.url == url && !cache_stale(entry.fetched_at, ttl) {
-                let mut ids: Vec<String> = entry.models.iter().map(|m| m.id.clone()).collect();
-                ids.sort();
-                return ids;
-            }
+        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref())
+            && entry.url == url
+            && !cache_stale(entry.fetched_at, ttl)
+        {
+            let mut ids: Vec<String> = entry.models.iter().map(|m| m.id.clone()).collect();
+            ids.sort();
+            return ids;
         }
     }
 
@@ -457,12 +461,13 @@ async fn fetch_anthropic_model_ids(client: &reqwest::Client, config: &NcaConfig)
 
     {
         let guard = anthropic_catalog_cache().lock().ok();
-        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref()) {
-            if entry.cache_key == cache_key && !cache_stale(entry.fetched_at, ttl) {
-                let mut ids: Vec<String> = entry.models.iter().map(|m| m.id.clone()).collect();
-                ids.sort();
-                return ids;
-            }
+        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref())
+            && entry.cache_key == cache_key
+            && !cache_stale(entry.fetched_at, ttl)
+        {
+            let mut ids: Vec<String> = entry.models.iter().map(|m| m.id.clone()).collect();
+            ids.sort();
+            return ids;
         }
     }
 
@@ -513,14 +518,12 @@ async fn fetch_anthropic_model_ids(client: &reqwest::Client, config: &NcaConfig)
     let models = Arc::new(all);
     let mut ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
     ids.sort();
-    if completed {
-        if let Ok(mut guard) = anthropic_catalog_cache().lock() {
-            *guard = Some(AnthropicCatalogEntry {
-                cache_key,
-                fetched_at: Instant::now(),
-                models,
-            });
-        }
+    if completed && let Ok(mut guard) = anthropic_catalog_cache().lock() {
+        *guard = Some(AnthropicCatalogEntry {
+            cache_key,
+            fetched_at: Instant::now(),
+            models,
+        });
     }
     ids
 }
@@ -536,17 +539,17 @@ async fn fetch_openai_model_ids(client: &reqwest::Client, config: &NcaConfig) ->
 
     {
         let guard = openai_catalog_cache().lock().ok();
-        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref()) {
-            if entry.cache_key == cache_key && !cache_stale(entry.fetched_at, ttl) {
-                if let Some(arr) = entry.value.get("data").and_then(|d| d.as_array()) {
-                    let mut ids: Vec<String> = arr
-                        .iter()
-                        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
-                        .collect();
-                    ids.sort();
-                    return ids;
-                }
-            }
+        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref())
+            && entry.cache_key == cache_key
+            && !cache_stale(entry.fetched_at, ttl)
+            && let Some(arr) = entry.value.get("data").and_then(|d| d.as_array())
+        {
+            let mut ids: Vec<String> = arr
+                .iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                .collect();
+            ids.sort();
+            return ids;
         }
     }
 

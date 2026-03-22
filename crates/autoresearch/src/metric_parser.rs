@@ -159,34 +159,34 @@ impl MetricParser {
         let mut metrics = ParsedMetrics::default();
 
         for (name, regex) in &self.patterns {
-            if let Some(captures) = regex.captures(output) {
-                if let Some(value) = captures.get(1) {
-                    let value_str = value.as_str();
-                    match name.as_str() {
-                        "num_steps" | "depth" | "batch_size" => {
-                            if let Ok(n) = value_str.parse::<u64>() {
-                                match name.as_str() {
-                                    "num_steps" => metrics.num_steps = Some(n),
-                                    "depth" => metrics.depth = Some(n as u32),
-                                    "batch_size" => metrics.batch_size = Some(n),
-                                    _ => {}
-                                }
+            if let Some(captures) = regex.captures(output)
+                && let Some(value) = captures.get(1)
+            {
+                let value_str = value.as_str();
+                match name.as_str() {
+                    "num_steps" | "depth" | "batch_size" => {
+                        if let Ok(n) = value_str.parse::<u64>() {
+                            match name.as_str() {
+                                "num_steps" => metrics.num_steps = Some(n),
+                                "depth" => metrics.depth = Some(n as u32),
+                                "batch_size" => metrics.batch_size = Some(n),
+                                _ => {}
                             }
                         }
-                        _ => {
-                            if let Ok(f) = value_str.parse::<f64>() {
-                                match name.as_str() {
-                                    "val_bpb" => metrics.val_bpb = Some(f),
-                                    "peak_vram_mb" => metrics.peak_vram_mb = Some(f),
-                                    "training_seconds" => metrics.training_seconds = Some(f),
-                                    "total_seconds" => metrics.total_seconds = Some(f),
-                                    "mfu_percent" => metrics.mfu_percent = Some(f),
-                                    "total_tokens_m" => metrics.total_tokens_m = Some(f),
-                                    "num_params_m" => metrics.num_params_m = Some(f),
-                                    "learning_rate" => metrics.learning_rate = Some(f),
-                                    _ => {
-                                        metrics.extra.insert(name.clone(), f);
-                                    }
+                    }
+                    _ => {
+                        if let Ok(f) = value_str.parse::<f64>() {
+                            match name.as_str() {
+                                "val_bpb" => metrics.val_bpb = Some(f),
+                                "peak_vram_mb" => metrics.peak_vram_mb = Some(f),
+                                "training_seconds" => metrics.training_seconds = Some(f),
+                                "total_seconds" => metrics.total_seconds = Some(f),
+                                "mfu_percent" => metrics.mfu_percent = Some(f),
+                                "total_tokens_m" => metrics.total_tokens_m = Some(f),
+                                "num_params_m" => metrics.num_params_m = Some(f),
+                                "learning_rate" => metrics.learning_rate = Some(f),
+                                _ => {
+                                    metrics.extra.insert(name.clone(), f);
                                 }
                             }
                         }

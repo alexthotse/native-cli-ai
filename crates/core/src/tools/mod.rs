@@ -118,6 +118,12 @@ impl ToolRegistry {
     }
 }
 
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Trait implemented by each tool.
 #[async_trait::async_trait]
 pub trait ToolExecutor: Send + Sync {

@@ -252,7 +252,7 @@ fn collect_skill_entries(workspace_root: &Path, skill_dirs: &[PathBuf]) -> Vec<S
 fn load_slash_entries(workspace_root: &Path, skill_dirs: &[PathBuf]) -> Vec<SlashEntry> {
     let mut entries: Vec<SlashEntry> = SLASH_COMMANDS
         .iter()
-        .map(|c| SlashEntry::Command(*c))
+        .map(|c| SlashEntry::Command(c))
         .collect();
 
     // Add discovered skills
@@ -315,14 +315,13 @@ fn branch_picker_enter_command(
         return (!branch_name.is_empty()).then(|| TuiCmd::CreateBranch(branch_name.to_string()));
     }
 
-    if !branch_name.is_empty() {
-        if let Some((idx, _)) = branches
+    if !branch_name.is_empty()
+        && let Some((idx, _)) = branches
             .iter()
             .enumerate()
             .find(|(_, branch)| branch.eq_ignore_ascii_case(branch_name))
-        {
-            return Some(TuiCmd::SwitchBranch(branches[idx].clone()));
-        }
+    {
+        return Some(TuiCmd::SwitchBranch(branches[idx].clone()));
     }
 
     filtered
@@ -788,7 +787,7 @@ fn transcript_lines_and_hits(
                     Line::from(vec![
                         Span::styled(format!(" {icon} "), st),
                         Span::styled(
-                            format!("{name}"),
+                            name.to_string(),
                             Style::default()
                                 .fg(theme::TOOL)
                                 .add_modifier(Modifier::BOLD),
@@ -907,24 +906,24 @@ fn transcript_lines_and_hits(
         }
     }
 
-    if let Some(stream) = &state.streaming_assistant {
-        if !stream.is_empty() {
-            push_transcript_line(
-                &mut lines,
-                &mut hits,
-                Line::from(vec![
-                    Span::styled(
-                        " nca ",
-                        Style::default().fg(Color::Black).bg(theme::ASSISTANT),
-                    ),
-                    Span::styled(" streaming", Style::default().fg(theme::MUTED)),
-                ]),
-                None,
-            );
-            push_transcript_line(&mut lines, &mut hits, Line::default(), None);
-            for text_line in wrap_text(stream, w) {
-                push_transcript_line(&mut lines, &mut hits, parse_md_line(&text_line), None);
-            }
+    if let Some(stream) = &state.streaming_assistant
+        && !stream.is_empty()
+    {
+        push_transcript_line(
+            &mut lines,
+            &mut hits,
+            Line::from(vec![
+                Span::styled(
+                    " nca ",
+                    Style::default().fg(Color::Black).bg(theme::ASSISTANT),
+                ),
+                Span::styled(" streaming", Style::default().fg(theme::MUTED)),
+            ]),
+            None,
+        );
+        push_transcript_line(&mut lines, &mut hits, Line::default(), None);
+        for text_line in wrap_text(stream, w) {
+            push_transcript_line(&mut lines, &mut hits, parse_md_line(&text_line), None);
         }
     }
 
@@ -1182,12 +1181,13 @@ fn parse_tui_question_answer(
     if t.is_empty() || t == "0" || t.eq_ignore_ascii_case("s") {
         return Some(QuestionSelection::Suggested);
     }
-    if let Ok(n) = t.parse::<usize>() {
-        if n >= 1 && n <= q.options.len() {
-            return Some(QuestionSelection::Option {
-                option_id: q.options[n - 1].id.clone(),
-            });
-        }
+    if let Ok(n) = t.parse::<usize>()
+        && n >= 1
+        && n <= q.options.len()
+    {
+        return Some(QuestionSelection::Option {
+            option_id: q.options[n - 1].id.clone(),
+        });
     }
     if q.allow_custom && !t.is_empty() {
         return Some(QuestionSelection::Custom {
@@ -1217,12 +1217,11 @@ pub fn run_blocking(
     let slash_entries = load_slash_entries(&workspace_root, &skill_dirs);
     let workspace_files = file_mentions::discover_workspace_files(&workspace_root);
 
-    if show_run_banner {
-        if let Ok(mut g) = state.lock() {
-            g.blocks.push(DisplayBlock::System(
-                "Interactive run — type a message, Tab cycles agent profile, Ctrl+P opens commands.".into(),
-            ));
-        }
+    if show_run_banner && let Ok(mut g) = state.lock() {
+        g.blocks.push(DisplayBlock::System(
+            "Interactive run — type a message, Tab cycles agent profile, Ctrl+P opens commands."
+                .into(),
+        ));
     }
 
     loop {
@@ -1510,7 +1509,7 @@ pub fn run_blocking(
                 if sidebar_opt.is_none() {
                     status_spans.push(Span::raw(" │ "));
                     status_spans.push(Span::styled(
-                        format!("{}", &g.session_id[..8.min(g.session_id.len())]),
+                        g.session_id[..8.min(g.session_id.len())].to_string(),
                         Style::default().fg(theme::MUTED),
                     ));
                     status_spans.extend([
@@ -2035,8 +2034,13 @@ pub fn run_blocking(
                             )));
                         }
                         let current_session_id = g.session_id.clone();
-                        for vis_idx in list_start..list_end {
-                            let id = &g.session_picker_entries[filtered_indices[vis_idx]];
+                        for (vis_idx, &filt_idx) in filtered_indices
+                            .iter()
+                            .enumerate()
+                            .skip(list_start)
+                            .take(list_end.saturating_sub(list_start))
+                        {
+                            let id = &g.session_picker_entries[filt_idx];
                             let is_current = id == &current_session_id;
                             let marker = if is_current { " *" } else { "" };
                             let st = if vis_idx == pick {
@@ -2251,8 +2255,13 @@ pub fn run_blocking(
                                 Style::default().fg(theme::MUTED),
                             )));
                         }
-                        for vi in list_start..list_end {
-                            let entry = &g.model_picker_entries[vis_indices[vi]];
+                        for (vi, &model_idx) in vis_indices
+                            .iter()
+                            .enumerate()
+                            .skip(list_start)
+                            .take(list_end.saturating_sub(list_start))
+                        {
+                            let entry = &g.model_picker_entries[model_idx];
                             if entry.is_header {
                                 lines.push(Line::from(Span::styled(
                                     format!(" {}", entry.label),
@@ -2316,7 +2325,7 @@ pub fn run_blocking(
                     let sel = clamp_selection(g.connect_menu_index, &rows);
                     let selected_row = row_index_for_selection(&rows, sel);
                     let body_lines = rows.len().max(1);
-                    let popup_h = (body_lines as u16).saturating_add(9).min(24).max(11);
+                    let popup_h = (body_lines as u16).saturating_add(9).clamp(11, 24);
                     let popup_area = centered_rect(area, 58, popup_h);
                     let mut lines: Vec<Line> = vec![
                         Line::from(vec![
@@ -2486,54 +2495,52 @@ pub fn run_blocking(
                         }
                     }
 
-                    if let Some(sr) = slash_r {
-                        if rect_contains(sr, m.column, m.row)
-                            && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
-                        {
-                            let inner_y = m.row.saturating_sub(sr.y).saturating_sub(1);
-                            if slash_panel_visible(&g.input_buffer) && !slash_filtered.is_empty() {
-                                let n_show = slash_filtered.len().min(SLASH_PANEL_MAX_ROWS);
-                                let max_scroll = slash_filtered.len().saturating_sub(n_show);
-                                let list_scroll = g
-                                    .slash_menu_index
-                                    .saturating_sub(n_show.saturating_sub(1))
-                                    .min(max_scroll);
-                                if (inner_y as usize) < n_show {
-                                    let idx = list_scroll + inner_y as usize;
-                                    if idx < slash_filtered.len() {
-                                        g.input_buffer = slash_filtered[idx].command_str();
-                                        g.cursor_char_idx = g.input_buffer.chars().count();
-                                        g.slash_menu_index = idx;
-                                    }
+                    if let Some(sr) = slash_r
+                        && rect_contains(sr, m.column, m.row)
+                        && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                    {
+                        let inner_y = m.row.saturating_sub(sr.y).saturating_sub(1);
+                        if slash_panel_visible(&g.input_buffer) && !slash_filtered.is_empty() {
+                            let n_show = slash_filtered.len().min(SLASH_PANEL_MAX_ROWS);
+                            let max_scroll = slash_filtered.len().saturating_sub(n_show);
+                            let list_scroll = g
+                                .slash_menu_index
+                                .saturating_sub(n_show.saturating_sub(1))
+                                .min(max_scroll);
+                            if (inner_y as usize) < n_show {
+                                let idx = list_scroll + inner_y as usize;
+                                if idx < slash_filtered.len() {
+                                    g.input_buffer = slash_filtered[idx].command_str();
+                                    g.cursor_char_idx = g.input_buffer.chars().count();
+                                    g.slash_menu_index = idx;
                                 }
-                            } else if !at_matches.is_empty() {
-                                let n_show = at_matches.len().min(SLASH_PANEL_MAX_ROWS);
-                                let max_scroll = at_matches.len().saturating_sub(n_show);
-                                let pick = g.at_menu_index.min(at_matches.len().saturating_sub(1));
-                                let list_scroll = pick
-                                    .saturating_sub(n_show.saturating_sub(1))
-                                    .min(max_scroll);
-                                if (inner_y as usize) < n_show {
-                                    let idx = list_scroll + inner_y as usize;
-                                    if let Some(choice) = at_matches.get(idx) {
-                                        let cur = g.cursor_char_idx;
-                                        let (buf, cidx) =
-                                            apply_at_completion(&g.input_buffer, cur, choice);
-                                        g.input_buffer = buf;
-                                        g.cursor_char_idx = cidx;
-                                    }
+                            }
+                        } else if !at_matches.is_empty() {
+                            let n_show = at_matches.len().min(SLASH_PANEL_MAX_ROWS);
+                            let max_scroll = at_matches.len().saturating_sub(n_show);
+                            let pick = g.at_menu_index.min(at_matches.len().saturating_sub(1));
+                            let list_scroll = pick
+                                .saturating_sub(n_show.saturating_sub(1))
+                                .min(max_scroll);
+                            if (inner_y as usize) < n_show {
+                                let idx = list_scroll + inner_y as usize;
+                                if let Some(choice) = at_matches.get(idx) {
+                                    let cur = g.cursor_char_idx;
+                                    let (buf, cidx) =
+                                        apply_at_completion(&g.input_buffer, cur, choice);
+                                    g.input_buffer = buf;
+                                    g.cursor_char_idx = cidx;
                                 }
                             }
                         }
                     }
 
                     // Check click on branch chip in status bar.
-                    if let Some(bounds) = g.branch_chip_bounds {
-                        if rect_contains(bounds, m.column, m.row)
-                            && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
-                        {
-                            let _ = cmd_tx.send(TuiCmd::OpenBranchPicker);
-                        }
+                    if let Some(bounds) = g.branch_chip_bounds
+                        && rect_contains(bounds, m.column, m.row)
+                        && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                    {
+                        let _ = cmd_tx.send(TuiCmd::OpenBranchPicker);
                     }
                 }
                 Event::Key(key) => {
@@ -2561,12 +2568,12 @@ pub fn run_blocking(
                                 let filtered = filter_palette_rows(&g.command_palette_query);
                                 let selectable = palette_selectable_indices(&filtered);
                                 let pick = g.palette_index.min(selectable.len().saturating_sub(1));
-                                if let Some(&abs_idx) = selectable.get(pick) {
-                                    if let PaletteRow::Entry { label, .. } = filtered[abs_idx] {
-                                        let cmd = palette_command_for_label(label);
-                                        g.input_buffer = cmd.to_string();
-                                        g.cursor_char_idx = g.input_buffer.chars().count();
-                                    }
+                                if let Some(&abs_idx) = selectable.get(pick)
+                                    && let PaletteRow::Entry { label, .. } = filtered[abs_idx]
+                                {
+                                    let cmd = palette_command_for_label(label);
+                                    g.input_buffer = cmd.to_string();
+                                    g.cursor_char_idx = g.input_buffer.chars().count();
                                 }
                                 g.command_palette_open = false;
                                 g.command_palette_query.clear();
