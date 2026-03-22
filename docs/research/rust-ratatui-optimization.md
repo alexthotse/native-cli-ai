@@ -250,8 +250,9 @@ loop {
 
 #### 4. Async Traits with `async-trait`
 
+The `async-trait` crate is **not** zero-cost — it heap-allocates a `Box<dyn Future>` per call. For hot paths, prefer native async functions or poll-based approaches. For trait-object dispatch (like our tool executors), the allocation is acceptable since the network call dominates.
+
 ```rust
-// Use async-trait for zero-cost async trait objects
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     async fn execute(&self, input: ToolInput) -> Result<ToolOutput>;

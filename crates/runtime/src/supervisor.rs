@@ -672,18 +672,27 @@ impl Supervisor {
         }
     }
 
-    /// Reset for a fresh session: new ID, clear messages, clear children.
+    /// Reset for a fresh session: new ID, rebuild system prompt, clear lineage and cost.
     pub fn reset_for_new_session(&mut self) {
         self.session_id = generate_session_id();
         self.agent.messages.clear();
+        let system_prompt = build_system_prompt(
+            &self.config,
+            &self.workspace_root,
+            self.orchestration.as_ref(),
+        );
+        self.agent.set_system_prompt(system_prompt);
         self.child_session_ids.clear();
+        self.parent_session_id = None;
+        self.inherited_summary = None;
+        self.spawn_reason = None;
         self.session_summary = None;
+        self.agent.cost_tracker = Default::default();
         self.status = SessionStatus::Running;
         self.created_at = Utc::now();
         self.last_summary_at_tokens = 0;
-        self.session_store = SessionStore::new(
-            self.workspace_root.join(&self.config.session.history_dir),
-        );
+        self.session_store =
+            SessionStore::new(self.workspace_root.join(&self.config.session.history_dir));
     }
 
     pub fn session_id(&self) -> &str {
@@ -711,7 +720,26 @@ impl Supervisor {
         let agent = self.agent_mut();
         agent.model = m;
         agent.replace_provider(provider);
+        self.rebuild_context_manager_sync();
         Ok(())
+    }
+
+    /// Rebuild context_manager from current config (sync, uses configured window target).
+    fn rebuild_context_manager_sync(&mut self) {
+        let ctx = &self.config.memory.context;
+        let window = if ctx.context_window_target > 0 {
+            ctx.context_window_target
+        } else {
+            128_000
+        };
+        let context_config = ContextManagerConfig {
+            context_window_target: window,
+            max_retained_messages: ctx.max_retained_messages,
+            auto_summarize_threshold: ctx.auto_summarize_threshold,
+            enable_auto_summarize: ctx.enable_auto_summarize,
+            max_message_chars_for_summary: 10000,
+        };
+        self.context_manager = ContextManager::new(context_config, self.model.clone());
     }
 
     pub fn request_cancel(&self) {

@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use crate::file_mentions;
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::connect_modal::{
-    build_connect_rows, clamp_selection, provider_at_selection, row_index_for_selection,
-    selectable_row_indices, ConnectRow,
+    ConnectRow, build_connect_rows, clamp_selection, provider_at_selection,
+    row_index_for_selection, selectable_row_indices,
 };
-use crate::tui::state::{ApprovalRequest, DisplayBlock, ModelPickerAction, ModelPickerEntry, TuiSessionState};
+use crate::tui::state::{
+    ApprovalRequest, DisplayBlock, ModelPickerAction, ModelPickerEntry, TuiSessionState,
+};
 use crossterm::{
     cursor::{Hide, MoveToColumn, Show},
     event::{
@@ -141,7 +143,11 @@ fn at_completion_active(buffer: &str, cursor_char_idx: usize) -> bool {
     file_mentions::at_token_before_cursor(buffer, b).is_some()
 }
 
-fn at_completion_matches(workspace_files: &[String], buffer: &str, cursor_char_idx: usize) -> Vec<String> {
+fn at_completion_matches(
+    workspace_files: &[String],
+    buffer: &str,
+    cursor_char_idx: usize,
+) -> Vec<String> {
     if !at_completion_active(buffer, cursor_char_idx) {
         return Vec::new();
     }
@@ -337,33 +343,102 @@ enum PaletteRow {
 
 const PALETTE_CATALOG: &[PaletteRow] = &[
     PaletteRow::Section("Suggested"),
-    PaletteRow::Entry { label: "Switch model", shortcut: "ctrl+x m" },
-    PaletteRow::Entry { label: "Connect provider", shortcut: "" },
+    PaletteRow::Entry {
+        label: "Switch model",
+        shortcut: "ctrl+x m",
+    },
+    PaletteRow::Entry {
+        label: "Connect provider",
+        shortcut: "",
+    },
     PaletteRow::Section("Session"),
-    PaletteRow::Entry { label: "Open editor", shortcut: "ctrl+x e" },
-    PaletteRow::Entry { label: "Switch session", shortcut: "ctrl+x l" },
-    PaletteRow::Entry { label: "New session", shortcut: "ctrl+x n" },
-    PaletteRow::Entry { label: "Compact", shortcut: "ctrl+x c" },
-    PaletteRow::Entry { label: "Export session", shortcut: "" },
+    PaletteRow::Entry {
+        label: "Open editor",
+        shortcut: "ctrl+x e",
+    },
+    PaletteRow::Entry {
+        label: "Switch session",
+        shortcut: "ctrl+x l",
+    },
+    PaletteRow::Entry {
+        label: "New session",
+        shortcut: "ctrl+x n",
+    },
+    PaletteRow::Entry {
+        label: "Compact",
+        shortcut: "ctrl+x c",
+    },
+    PaletteRow::Entry {
+        label: "Export session",
+        shortcut: "",
+    },
     PaletteRow::Section("Prompt"),
-    PaletteRow::Entry { label: "Skills", shortcut: "" },
-    PaletteRow::Entry { label: "Agent profile", shortcut: "ctrl+x a" },
-    PaletteRow::Entry { label: "Toggle thinking", shortcut: "" },
+    PaletteRow::Entry {
+        label: "Skills",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "Agent profile",
+        shortcut: "ctrl+x a",
+    },
+    PaletteRow::Entry {
+        label: "Toggle thinking",
+        shortcut: "",
+    },
     PaletteRow::Section("Provider"),
-    PaletteRow::Entry { label: "Connect provider", shortcut: "" },
-    PaletteRow::Entry { label: "Switch provider", shortcut: "" },
-    PaletteRow::Entry { label: "API key", shortcut: "" },
+    PaletteRow::Entry {
+        label: "Connect provider",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "Switch provider",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "API key",
+        shortcut: "",
+    },
     PaletteRow::Section("System"),
-    PaletteRow::Entry { label: "View status", shortcut: "ctrl+x s" },
-    PaletteRow::Entry { label: "Config", shortcut: "" },
-    PaletteRow::Entry { label: "Doctor", shortcut: "" },
-    PaletteRow::Entry { label: "Help", shortcut: "ctrl+x h" },
-    PaletteRow::Entry { label: "Permissions", shortcut: "" },
-    PaletteRow::Entry { label: "Memory", shortcut: "" },
-    PaletteRow::Entry { label: "Logs", shortcut: "" },
-    PaletteRow::Entry { label: "MCP servers", shortcut: "" },
-    PaletteRow::Entry { label: "Clear screen", shortcut: "ctrl+l" },
-    PaletteRow::Entry { label: "Exit", shortcut: "ctrl+x q" },
+    PaletteRow::Entry {
+        label: "View status",
+        shortcut: "ctrl+x s",
+    },
+    PaletteRow::Entry {
+        label: "Config",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "Doctor",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "Help",
+        shortcut: "ctrl+x h",
+    },
+    PaletteRow::Entry {
+        label: "Permissions",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "Memory",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "Logs",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "MCP servers",
+        shortcut: "",
+    },
+    PaletteRow::Entry {
+        label: "Clear screen",
+        shortcut: "ctrl+l",
+    },
+    PaletteRow::Entry {
+        label: "Exit",
+        shortcut: "ctrl+x q",
+    },
 ];
 
 fn palette_command_for_label(label: &str) -> &'static str {
@@ -2435,8 +2510,9 @@ pub fn run_blocking(
                                 let n_show = at_matches.len().min(SLASH_PANEL_MAX_ROWS);
                                 let max_scroll = at_matches.len().saturating_sub(n_show);
                                 let pick = g.at_menu_index.min(at_matches.len().saturating_sub(1));
-                                let list_scroll =
-                                    pick.saturating_sub(n_show.saturating_sub(1)).min(max_scroll);
+                                let list_scroll = pick
+                                    .saturating_sub(n_show.saturating_sub(1))
+                                    .min(max_scroll);
                                 if (inner_y as usize) < n_show {
                                     let idx = list_scroll + inner_y as usize;
                                     if let Some(choice) = at_matches.get(idx) {
@@ -2477,7 +2553,8 @@ pub fn run_blocking(
                                 let filtered = filter_palette_rows(&g.command_palette_query);
                                 let selectable = palette_selectable_indices(&filtered);
                                 if !selectable.is_empty() {
-                                    g.palette_index = (g.palette_index + 1).min(selectable.len().saturating_sub(1));
+                                    g.palette_index = (g.palette_index + 1)
+                                        .min(selectable.len().saturating_sub(1));
                                 }
                             }
                             (KeyCode::Enter, _) => {
@@ -2499,13 +2576,15 @@ pub fn run_blocking(
                                 g.command_palette_query.pop();
                                 let filtered = filter_palette_rows(&g.command_palette_query);
                                 let selectable = palette_selectable_indices(&filtered);
-                                g.palette_index = g.palette_index.min(selectable.len().saturating_sub(1));
+                                g.palette_index =
+                                    g.palette_index.min(selectable.len().saturating_sub(1));
                             }
                             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                                 g.command_palette_query.push(c);
                                 let filtered = filter_palette_rows(&g.command_palette_query);
                                 let selectable = palette_selectable_indices(&filtered);
-                                g.palette_index = g.palette_index.min(selectable.len().saturating_sub(1));
+                                g.palette_index =
+                                    g.palette_index.min(selectable.len().saturating_sub(1));
                             }
                             _ => {}
                         }
@@ -2531,7 +2610,8 @@ pub fn run_blocking(
                             }
                             (KeyCode::End, _) => {
                                 let max_vis = 16usize;
-                                g.info_modal_scroll = g.info_modal_lines.len().saturating_sub(max_vis);
+                                g.info_modal_scroll =
+                                    g.info_modal_lines.len().saturating_sub(max_vis);
                             }
                             _ => {}
                         }
@@ -2557,8 +2637,10 @@ pub fn run_blocking(
                             }
                             (KeyCode::Up, _) => {
                                 if selectable_count > 0 {
-                                    g.model_picker_index =
-                                        g.model_picker_index.saturating_sub(1).min(selectable_count - 1);
+                                    g.model_picker_index = g
+                                        .model_picker_index
+                                        .saturating_sub(1)
+                                        .min(selectable_count - 1);
                                 }
                             }
                             (KeyCode::Down, _) => {
@@ -2578,7 +2660,8 @@ pub fn run_blocking(
                                                 || e.detail.to_ascii_lowercase().contains(&filter))
                                     })
                                     .collect();
-                                let pick = g.model_picker_index.min(selectable.len().saturating_sub(1));
+                                let pick =
+                                    g.model_picker_index.min(selectable.len().saturating_sub(1));
                                 if let Some(entry) = selectable.get(pick) {
                                     let action = entry.action.clone();
                                     g.close_model_picker();
@@ -2629,8 +2712,7 @@ pub fn run_blocking(
                                 }
                             }
                             (KeyCode::Enter, _) => {
-                                if let Some(p) =
-                                    provider_at_selection(&rows, g.connect_menu_index)
+                                if let Some(p) = provider_at_selection(&rows, g.connect_menu_index)
                                 {
                                     g.close_connect_modal();
                                     drop(g);
@@ -2774,12 +2856,16 @@ pub fn run_blocking(
                     if g.permission_picker_open {
                         const PERM_COUNT: usize = 5;
                         match (key.code, key.modifiers) {
-                            (KeyCode::Esc, _) => { g.close_permission_picker(); }
+                            (KeyCode::Esc, _) => {
+                                g.close_permission_picker();
+                            }
                             (KeyCode::Up, _) => {
-                                g.permission_picker_index = g.permission_picker_index.saturating_sub(1);
+                                g.permission_picker_index =
+                                    g.permission_picker_index.saturating_sub(1);
                             }
                             (KeyCode::Down, _) => {
-                                g.permission_picker_index = (g.permission_picker_index + 1).min(PERM_COUNT - 1);
+                                g.permission_picker_index =
+                                    (g.permission_picker_index + 1).min(PERM_COUNT - 1);
                             }
                             (KeyCode::Enter, _) => {
                                 let idx = g.permission_picker_index;
@@ -2796,12 +2882,15 @@ pub fn run_blocking(
                     if g.agent_picker_open {
                         const AGENT_COUNT: usize = 5;
                         match (key.code, key.modifiers) {
-                            (KeyCode::Esc, _) => { g.close_agent_picker(); }
+                            (KeyCode::Esc, _) => {
+                                g.close_agent_picker();
+                            }
                             (KeyCode::Up, _) => {
                                 g.agent_picker_index = g.agent_picker_index.saturating_sub(1);
                             }
                             (KeyCode::Down, _) => {
-                                g.agent_picker_index = (g.agent_picker_index + 1).min(AGENT_COUNT - 1);
+                                g.agent_picker_index =
+                                    (g.agent_picker_index + 1).min(AGENT_COUNT - 1);
                             }
                             (KeyCode::Enter, _) => {
                                 let idx = g.agent_picker_index;
@@ -2817,24 +2906,37 @@ pub fn run_blocking(
                     // Session picker keyboard handling.
                     if g.session_picker_open {
                         let filter = g.session_picker_search.to_ascii_lowercase();
-                        let count = g.session_picker_entries.iter()
-                            .filter(|s| filter.is_empty() || s.to_ascii_lowercase().contains(&filter))
+                        let count = g
+                            .session_picker_entries
+                            .iter()
+                            .filter(|s| {
+                                filter.is_empty() || s.to_ascii_lowercase().contains(&filter)
+                            })
                             .count();
                         match (key.code, key.modifiers) {
-                            (KeyCode::Esc, _) => { g.close_session_picker(); }
+                            (KeyCode::Esc, _) => {
+                                g.close_session_picker();
+                            }
                             (KeyCode::Up, _) => {
                                 g.session_picker_index = g.session_picker_index.saturating_sub(1);
                             }
                             (KeyCode::Down, _) => {
                                 if count > 0 {
-                                    g.session_picker_index = (g.session_picker_index + 1).min(count.saturating_sub(1));
+                                    g.session_picker_index =
+                                        (g.session_picker_index + 1).min(count.saturating_sub(1));
                                 }
                             }
                             (KeyCode::Enter, _) => {
-                                let filtered: Vec<&String> = g.session_picker_entries.iter()
-                                    .filter(|s| filter.is_empty() || s.to_ascii_lowercase().contains(&filter))
+                                let filtered: Vec<&String> = g
+                                    .session_picker_entries
+                                    .iter()
+                                    .filter(|s| {
+                                        filter.is_empty()
+                                            || s.to_ascii_lowercase().contains(&filter)
+                                    })
                                     .collect();
-                                let pick = g.session_picker_index.min(filtered.len().saturating_sub(1));
+                                let pick =
+                                    g.session_picker_index.min(filtered.len().saturating_sub(1));
                                 if let Some(id) = filtered.get(pick) {
                                     let id = (*id).clone();
                                     g.close_session_picker();
@@ -2944,9 +3046,13 @@ pub fn run_blocking(
                             }
                         }
                         (KeyCode::Tab, _) => {
-                            let at_matches =
-                                at_completion_matches(&workspace_files, &g.input_buffer, g.cursor_char_idx);
-                            if !at_matches.is_empty() && at_completion_active(&g.input_buffer, g.cursor_char_idx)
+                            let at_matches = at_completion_matches(
+                                &workspace_files,
+                                &g.input_buffer,
+                                g.cursor_char_idx,
+                            );
+                            if !at_matches.is_empty()
+                                && at_completion_active(&g.input_buffer, g.cursor_char_idx)
                             {
                                 let pick = g.at_menu_index.min(at_matches.len() - 1);
                                 if let Some(choice) = at_matches.get(pick) {
@@ -2959,7 +3065,9 @@ pub fn run_blocking(
                             } else {
                                 let slash_filtered =
                                     filter_slash_entries(&slash_entries, &g.input_buffer);
-                                if !slash_filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                                if !slash_filtered.is_empty()
+                                    && slash_panel_visible(&g.input_buffer)
+                                {
                                     let pick = g.slash_menu_index % slash_filtered.len();
                                     g.input_buffer = slash_filtered[pick].command_str();
                                     g.cursor_char_idx = g.input_buffer.chars().count();
@@ -3131,15 +3239,21 @@ pub fn run_blocking(
                             g.cursor_char_idx = (g.cursor_char_idx + 1).min(max);
                         }
                         (KeyCode::Up, _) => {
-                            let at_matches =
-                                at_completion_matches(&workspace_files, &g.input_buffer, g.cursor_char_idx);
-                            if !at_matches.is_empty() && at_completion_active(&g.input_buffer, g.cursor_char_idx)
+                            let at_matches = at_completion_matches(
+                                &workspace_files,
+                                &g.input_buffer,
+                                g.cursor_char_idx,
+                            );
+                            if !at_matches.is_empty()
+                                && at_completion_active(&g.input_buffer, g.cursor_char_idx)
                             {
                                 g.at_menu_index = g.at_menu_index.saturating_sub(1);
                             } else {
                                 let slash_filtered =
                                     filter_slash_entries(&slash_entries, &g.input_buffer);
-                                if !slash_filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                                if !slash_filtered.is_empty()
+                                    && slash_panel_visible(&g.input_buffer)
+                                {
                                     g.slash_menu_index = g.slash_menu_index.saturating_sub(1);
                                 } else {
                                     g.transcript_follow_tail = false;
@@ -3148,40 +3262,47 @@ pub fn run_blocking(
                             }
                         }
                         (KeyCode::Down, _) => {
-                            let at_matches =
-                                at_completion_matches(&workspace_files, &g.input_buffer, g.cursor_char_idx);
-                            if !at_matches.is_empty() && at_completion_active(&g.input_buffer, g.cursor_char_idx)
+                            let at_matches = at_completion_matches(
+                                &workspace_files,
+                                &g.input_buffer,
+                                g.cursor_char_idx,
+                            );
+                            if !at_matches.is_empty()
+                                && at_completion_active(&g.input_buffer, g.cursor_char_idx)
                             {
                                 let n = at_matches.len();
                                 g.at_menu_index = (g.at_menu_index + 1) % n;
                             } else {
                                 let slash_filtered =
                                     filter_slash_entries(&slash_entries, &g.input_buffer);
-                                if !slash_filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
+                                if !slash_filtered.is_empty()
+                                    && slash_panel_visible(&g.input_buffer)
+                                {
                                     let n = slash_filtered.len();
                                     g.slash_menu_index = (g.slash_menu_index + 1) % n;
                                 } else {
-                                let sz = terminal.size().ok();
-                                if let Some(sz) = sz {
-                                    let area = Rect::new(0, 0, sz.width, sz.height);
-                                    let (main_area, _) = layout_with_sidebar(area);
-                                    let sh = composer_chrome_height(
-                                        &slash_entries,
-                                        &workspace_files,
-                                        &g.input_buffer,
-                                        g.cursor_char_idx,
-                                    );
-                                    let (tr, _, _, _) = layout_chunks(main_area, sh);
-                                    let lines = transcript_lines(&g, tr.width.saturating_sub(2));
-                                    let total = lines.len();
-                                    let th = tr.height.saturating_sub(2) as usize;
-                                    let max_scroll = total.saturating_sub(th);
-                                    g.scroll_lines = (g.scroll_lines + 1).min(max_scroll);
-                                    if g.scroll_lines >= max_scroll {
-                                        g.transcript_follow_tail = true;
+                                    let sz = terminal.size().ok();
+                                    if let Some(sz) = sz {
+                                        let area = Rect::new(0, 0, sz.width, sz.height);
+                                        let (main_area, _) = layout_with_sidebar(area);
+                                        let sh = composer_chrome_height(
+                                            &slash_entries,
+                                            &workspace_files,
+                                            &g.input_buffer,
+                                            g.cursor_char_idx,
+                                        );
+                                        let (tr, _, _, _) = layout_chunks(main_area, sh);
+                                        let lines =
+                                            transcript_lines(&g, tr.width.saturating_sub(2));
+                                        let total = lines.len();
+                                        let th = tr.height.saturating_sub(2) as usize;
+                                        let max_scroll = total.saturating_sub(th);
+                                        g.scroll_lines = (g.scroll_lines + 1).min(max_scroll);
+                                        if g.scroll_lines >= max_scroll {
+                                            g.transcript_follow_tail = true;
+                                        }
                                     }
                                 }
-                            }
                             }
                         }
                         (KeyCode::Backspace, _) => {

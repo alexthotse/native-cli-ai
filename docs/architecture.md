@@ -457,7 +457,7 @@ panic = "abort"         # Smaller panic handling
 
 - **Dev**: `cargo run -p nca-cli`
 - **Release**: `cargo build --release` produces `nca` (CLI).
-- **Size-optimized**: `cargo build --release --profile release-opt-size` (uses `release-opt-size` profile if defined).
+- **Size-optimized**: `cargo build --profile release-opt-size` (uses `release-opt-size` profile if defined).
 - **Install**: `cargo install --path crates/cli`.
 - **CI**: GitHub Actions with `cargo test --workspace`, `cargo clippy --workspace`, `cargo fmt --check`.
 - **Cross-compile**: Target `x86_64-unknown-linux-musl` for static Linux binaries. macOS and Windows use default targets.

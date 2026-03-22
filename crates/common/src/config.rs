@@ -290,7 +290,10 @@ impl NcaConfig {
                 return t.to_string();
             }
         }
-        env::var("EDITOR").unwrap_or_else(|_| "vim".to_string())
+        env::var("EDITOR")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "vim".to_string())
     }
 
     pub fn sync_default_model_from_provider(&mut self) {
@@ -299,7 +302,7 @@ impl NcaConfig {
 }
 
 /// User interface preferences persisted in config.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiConfig {
     /// Shell command to launch the external editor (e.g. `vim` or `code --wait`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -317,6 +320,17 @@ pub struct UiConfig {
 
 fn default_scroll_speed() -> u16 {
     3
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            editor: None,
+            theme: None,
+            hide_tips: false,
+            scroll_speed: default_scroll_speed(),
+        }
+    }
 }
 
 impl UiConfig {

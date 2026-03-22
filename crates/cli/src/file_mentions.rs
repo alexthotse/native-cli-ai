@@ -19,8 +19,11 @@ pub fn discover_workspace_files(workspace: &Path) -> Vec<String> {
     let mut stack: Vec<(PathBuf, usize)> = vec![(workspace.to_path_buf(), 0)];
 
     while let Some((dir, depth)) = stack.pop() {
-        if depth > DISCOVER_MAX_DEPTH || out.len() >= DISCOVER_MAX_FILES {
+        if out.len() >= DISCOVER_MAX_FILES {
             break;
+        }
+        if depth > DISCOVER_MAX_DEPTH {
+            continue;
         }
         let read_dir = match std::fs::read_dir(&dir) {
             Ok(r) => r,
@@ -115,10 +118,7 @@ pub fn parse_at_mentions(text: &str) -> Vec<(usize, usize, String)> {
                     } else {
                         text.len()
                     };
-                    let path: String = chars[path_start..i]
-                        .iter()
-                        .map(|(_, ch)| *ch)
-                        .collect();
+                    let path: String = chars[path_start..i].iter().map(|(_, ch)| *ch).collect();
                     let path = path.replace('\\', "/");
                     if !path.is_empty() && !path.starts_with('@') {
                         out.push((start, end_byte, path));
@@ -162,11 +162,7 @@ pub fn expand_at_file_mentions(
     for (start, end, rel) in mentions {
         let full = normalize_join(workspace, &rel);
         if full.as_os_str().is_empty() || !full.starts_with(workspace) {
-            inserts.push((
-                start,
-                end,
-                format!("[nca: skipped unsafe path @{rel}]"),
-            ));
+            inserts.push((start, end, format!("[nca: skipped unsafe path @{rel}]")));
             continue;
         }
         match std::fs::read(&full) {
@@ -175,23 +171,19 @@ pub fn expand_at_file_mentions(
                 let slice = &bytes[..n];
                 let content = String::from_utf8_lossy(slice);
                 let note = if bytes.len() > max_file_bytes {
-                    format!("\n… truncated ({} bytes, showing first {})\n", bytes.len(), n)
+                    format!(
+                        "\n… truncated ({} bytes, showing first {})\n",
+                        bytes.len(),
+                        n
+                    )
                 } else {
                     String::new()
                 };
-                let block = format!(
-                    "\n\n```file:{rel}\n{}{}\n```\n\n",
-                    content,
-                    note
-                );
+                let block = format!("\n\n```file:{rel}\n{}{}\n```\n\n", content, note);
                 inserts.push((start, end, block));
             }
             Err(e) => {
-                inserts.push((
-                    start,
-                    end,
-                    format!("[nca: could not read @{rel}: {e}]"),
-                ));
+                inserts.push((start, end, format!("[nca: could not read @{rel}: {e}]")));
             }
         }
     }
@@ -219,7 +211,10 @@ pub fn expand_at_file_mentions_default(text: &str, workspace: &Path) -> anyhow::
 pub fn at_token_before_cursor(line: &str, cursor_byte: usize) -> Option<(usize, String)> {
     let before = line.get(..cursor_byte.min(line.len()))?;
     let at_rel = before.rfind('@')?;
-    let prev = at_rel.checked_sub(1).and_then(|i| before[i..].chars().next());
+    let prev = at_rel
+        .checked_sub(1)
+        .and_then(|i| before.get(i..))
+        .and_then(|s| s.chars().next());
     if !is_at_mention_boundary(prev) {
         return None;
     }

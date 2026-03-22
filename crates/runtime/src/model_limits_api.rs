@@ -383,6 +383,9 @@ async fn fetch_openai_context(
 /// Fetch available model IDs from the active provider's API.
 /// Returns a sorted list of model ID strings. Uses the same cache as context-window lookups.
 pub async fn fetch_provider_model_ids(config: &NcaConfig) -> Vec<String> {
+    if !config.memory.context.query_provider_models_api {
+        return Vec::new();
+    }
     if std::env::var("NCA_SKIP_CONTEXT_API").ok().as_deref() == Some("1") {
         return Vec::new();
     }
@@ -465,6 +468,7 @@ async fn fetch_anthropic_model_ids(client: &reqwest::Client, config: &NcaConfig)
 
     let mut all: Vec<AnthropicModel> = Vec::new();
     let mut after_id: Option<String> = None;
+    let mut completed = true;
     loop {
         let mut url = format!("{base}/v1/models?limit=100");
         if let Some(ref id) = after_id {
@@ -479,23 +483,37 @@ async fn fetch_anthropic_model_ids(client: &reqwest::Client, config: &NcaConfig)
             .await
         {
             Ok(r) if r.status().is_success() => r,
-            _ => break,
+            _ => {
+                completed = false;
+                break;
+            }
         };
         let page: AnthropicModelsPage = match resp.json().await {
             Ok(p) => p,
-            Err(_) => break,
+            Err(_) => {
+                completed = false;
+                break;
+            }
         };
-        if page.data.is_empty() { break; }
+        if page.data.is_empty() {
+            break;
+        }
         let cursor = page.data.last().map(|m| m.id.clone());
         all.extend(page.data);
-        if !page.has_more { break; }
+        if !page.has_more {
+            break;
+        }
         after_id = cursor;
+    }
+
+    if !completed && all.is_empty() {
+        return Vec::new();
     }
 
     let models = Arc::new(all);
     let mut ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
     ids.sort();
-    {
+    if completed {
         if let Ok(mut guard) = anthropic_catalog_cache().lock() {
             *guard = Some(AnthropicCatalogEntry {
                 cache_key,
@@ -521,7 +539,8 @@ async fn fetch_openai_model_ids(client: &reqwest::Client, config: &NcaConfig) ->
         if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref()) {
             if entry.cache_key == cache_key && !cache_stale(entry.fetched_at, ttl) {
                 if let Some(arr) = entry.value.get("data").and_then(|d| d.as_array()) {
-                    let mut ids: Vec<String> = arr.iter()
+                    let mut ids: Vec<String> = arr
+                        .iter()
                         .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
                         .collect();
                     ids.sort();
@@ -543,7 +562,8 @@ async fn fetch_openai_model_ids(client: &reqwest::Client, config: &NcaConfig) ->
     let value = Arc::new(v);
     let mut ids = Vec::new();
     if let Some(arr) = value.get("data").and_then(|d| d.as_array()) {
-        ids = arr.iter()
+        ids = arr
+            .iter()
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
             .collect();
         ids.sort();

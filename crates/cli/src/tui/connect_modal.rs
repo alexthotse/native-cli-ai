@@ -113,11 +113,7 @@ pub fn row_index_for_selection(rows: &[ConnectRow], selection: usize) -> Option<
 
 pub fn clamp_selection(selection: usize, rows: &[ConnectRow]) -> usize {
     let n = selectable_row_indices(rows).len();
-    if n == 0 {
-        0
-    } else {
-        selection.min(n - 1)
-    }
+    if n == 0 { 0 } else { selection.min(n - 1) }
 }
 
 pub fn provider_at_selection(rows: &[ConnectRow], selection: usize) -> Option<ProviderKind> {
@@ -135,17 +131,24 @@ mod tests {
     #[test]
     fn filter_openai_shows_only_openai_under_popular() {
         let rows = build_connect_rows("openai");
-        assert!(rows.iter().any(|r| matches!(r, ConnectRow::SectionHeader("Popular"))));
         assert!(
-            rows
-                .iter()
-                .any(|r| matches!(r, ConnectRow::Provider { title: "OpenAI", .. }))
+            rows.iter()
+                .any(|r| matches!(r, ConnectRow::SectionHeader("Popular")))
         );
-        assert!(
-            !rows
-                .iter()
-                .any(|r| matches!(r, ConnectRow::Provider { title: "MiniMax", .. }))
-        );
+        assert!(rows.iter().any(|r| matches!(
+            r,
+            ConnectRow::Provider {
+                title: "OpenAI",
+                ..
+            }
+        )));
+        assert!(!rows.iter().any(|r| matches!(
+            r,
+            ConnectRow::Provider {
+                title: "MiniMax",
+                ..
+            }
+        )));
     }
 
     #[test]

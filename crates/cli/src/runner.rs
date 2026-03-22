@@ -1,8 +1,8 @@
 use nca_common::config::{NcaConfig, PermissionMode};
-use nca_core::provider::ProviderError;
 use nca_common::event::{AgentEvent, EndReason, QuestionSelection};
 use nca_common::session::{OrchestrationContext, SessionSnapshot};
 use nca_core::approval::ApprovalHandler;
+use nca_core::provider::ProviderError;
 use nca_core::tools::spawn_subagent::SpawnRequest;
 use nca_runtime::ipc::IpcHandle;
 use nca_runtime::supervisor::{Supervisor, SupervisorConfig, SupervisorHandle};

@@ -6,9 +6,9 @@ use crate::prompt::NcaPrompt;
 use crate::runner::{SessionRuntime, dispatch_question_answer, dispatch_tool_approval};
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::{
-    DisplayBlock, ModelPickerAction, ModelPickerEntry, TuiCmd, TuiSessionState,
-    git_create_branch, git_current_branch, git_list_branches, git_switch_branch,
-    replay_event_log_into_state, run_blocking, spawn_tui_bridge,
+    DisplayBlock, ModelPickerAction, ModelPickerEntry, TuiCmd, TuiSessionState, git_create_branch,
+    git_current_branch, git_list_branches, git_switch_branch, replay_event_log_into_state,
+    run_blocking, spawn_tui_bridge,
 };
 use nca_common::config::{PermissionMode, ProviderKind};
 use nca_common::event::{EndReason, QuestionSelection};
@@ -385,11 +385,7 @@ impl Repl {
 
         let output = Command::new("sh")
             .arg("-c")
-            .arg(format!(
-                "{} '{}'",
-                editor_cmd,
-                temp_path.display()
-            ))
+            .arg(format!("{} '{}'", editor_cmd, temp_path.display()))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1762,7 +1758,9 @@ impl Repl {
                     self.runtime.set_permission_mode(mode);
                     if let Ok(mut g) = tui_state.lock() {
                         g.set_permission_mode(&format!("{mode:?}"));
-                        g.blocks.push(DisplayBlock::System(format!("permission mode set to {mode:?}")));
+                        g.blocks.push(DisplayBlock::System(format!(
+                            "permission mode set to {mode:?}"
+                        )));
                     }
                 }
                 TuiCmd::SwitchAgent(idx) => {
@@ -1777,30 +1775,42 @@ impl Repl {
                         if let Ok(mut g) = tui_state.lock() {
                             g.set_agent_profile(&self.current_agent_label);
                             g.set_permission_mode(&format!("{:?}", self.runtime.permission_mode()));
-                            g.blocks.push(DisplayBlock::System(format!("switched to @{}", profile.label())));
+                            g.blocks.push(DisplayBlock::System(format!(
+                                "switched to @{}",
+                                profile.label()
+                            )));
                         }
                     }
                 }
                 TuiCmd::OpenEditor => {
-                    self.handle_command("/editor", ReplOutput::Tui(&tui_state)).await?;
+                    self.handle_command("/editor", ReplOutput::Tui(&tui_state))
+                        .await?;
                 }
                 TuiCmd::NewSession => {
-                    self.handle_command("/new", ReplOutput::Tui(&tui_state)).await?;
+                    self.handle_command("/new", ReplOutput::Tui(&tui_state))
+                        .await?;
                 }
                 TuiCmd::RunCompact => {
-                    self.handle_command("/compact", ReplOutput::Tui(&tui_state)).await?;
+                    self.handle_command("/compact", ReplOutput::Tui(&tui_state))
+                        .await?;
                 }
                 TuiCmd::OpenModelPicker => {
-                    self.handle_command("/models", ReplOutput::Tui(&tui_state)).await?;
+                    self.handle_command("/models", ReplOutput::Tui(&tui_state))
+                        .await?;
                 }
                 TuiCmd::OpenStatus => {
-                    self.handle_command("/status", ReplOutput::Tui(&tui_state)).await?;
+                    self.handle_command("/status", ReplOutput::Tui(&tui_state))
+                        .await?;
                 }
                 TuiCmd::OpenHelp => {
-                    self.handle_command("/help", ReplOutput::Tui(&tui_state)).await?;
+                    self.handle_command("/help", ReplOutput::Tui(&tui_state))
+                        .await?;
                 }
                 TuiCmd::OpenAgentPicker => {
-                    let current_idx = AgentProfile::ALL.iter().position(|p| *p == self.agent_profile).unwrap_or(0);
+                    let current_idx = AgentProfile::ALL
+                        .iter()
+                        .position(|p| *p == self.agent_profile)
+                        .unwrap_or(0);
                     if let Ok(mut g) = tui_state.lock() {
                         g.open_agent_picker(current_idx);
                     }
@@ -1812,13 +1822,15 @@ impl Repl {
                     }
                 }
                 TuiCmd::OpenSessions => {
-                    self.handle_command("/sessions", ReplOutput::Tui(&tui_state)).await?;
+                    self.handle_command("/sessions", ReplOutput::Tui(&tui_state))
+                        .await?;
                 }
                 TuiCmd::ResumeSession(session_id) => {
                     let current = self.runtime.session_id().to_string();
                     if session_id == current {
                         if let Ok(mut g) = tui_state.lock() {
-                            g.blocks.push(DisplayBlock::System("Already on this session.".into()));
+                            g.blocks
+                                .push(DisplayBlock::System("Already on this session.".into()));
                         }
                     } else {
                         // Save current, then attempt resume
@@ -1845,7 +1857,10 @@ impl Repl {
                         let mut cfg = self.runtime.config().clone();
                         cfg.apply_model_override(&next_model);
                         if let Ok(()) = self.runtime.apply_nca_config(cfg) {
-                            let _ = self.runtime.config().save_workspace_file(self.runtime.workspace_root());
+                            let _ = self
+                                .runtime
+                                .config()
+                                .save_workspace_file(self.runtime.workspace_root());
                             if let Ok(mut g) = tui_state.lock() {
                                 g.model = self.runtime.model().to_string();
                                 g.blocks.push(DisplayBlock::System(format!(
@@ -1856,7 +1871,8 @@ impl Repl {
                         }
                     } else if let Ok(mut g) = tui_state.lock() {
                         g.blocks.push(DisplayBlock::System(
-                            "[F2] no recent models to cycle (need 2+ in model.recent_models)".into(),
+                            "[F2] no recent models to cycle (need 2+ in model.recent_models)"
+                                .into(),
                         ));
                     }
                 }
@@ -1886,7 +1902,11 @@ impl Repl {
                         ))
                     });
                     if let Some((Some(p), key_input, connect_after_save)) = api_key_modal_state {
-                        let typed = if line.starts_with('/') { "" } else { key_input.trim() };
+                        let typed = if line.starts_with('/') {
+                            ""
+                        } else {
+                            key_input.trim()
+                        };
                         let had_existing = self.runtime.config().provider.api_key_present_for(p);
                         if line.starts_with('/') {
                             if let Ok(mut g) = tui_state.lock() {
@@ -1992,18 +2012,17 @@ impl Repl {
                         }
                         continue;
                     }
-                    let expanded = match expand_at_file_mentions_default(
-                        &line,
-                        self.runtime.workspace_root(),
-                    ) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            if let Ok(mut g) = tui_state.lock() {
-                                g.push_error(format!("file mentions: {e}"));
+                    let expanded =
+                        match expand_at_file_mentions_default(&line, self.runtime.workspace_root())
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                if let Ok(mut g) = tui_state.lock() {
+                                    g.push_error(format!("file mentions: {e}"));
+                                }
+                                continue;
                             }
-                            continue;
-                        }
-                    };
+                        };
                     if let Ok(mut g) = tui_state.lock() {
                         g.set_busy(true);
                     }
@@ -2080,7 +2099,6 @@ impl Repl {
             Err(e) => log(st, &format!("[bash] {e}")),
         }
     }
-
 }
 
 /// Tab completion for REPL commands and skills
@@ -2170,7 +2188,10 @@ impl Completer for Repl {
     }
 }
 
-fn build_model_picker_entries(config: &nca_common::config::NcaConfig, provider_models: &[String]) -> Vec<ModelPickerEntry> {
+fn build_model_picker_entries(
+    config: &nca_common::config::NcaConfig,
+    provider_models: &[String],
+) -> Vec<ModelPickerEntry> {
     let mut entries = Vec::new();
     entries.push(ModelPickerEntry {
         label: "Providers".into(),
