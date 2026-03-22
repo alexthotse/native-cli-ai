@@ -268,12 +268,13 @@ pub fn nca_home_dir() -> Option<PathBuf> {
 
 /// Stable per-workspace id: `{slug}-{hex}` derived from the canonical workspace path.
 pub fn workspace_cache_id(workspace_root: &Path) -> Result<(String, PathBuf), WorkspaceCacheError> {
-    let canonical = workspace_root.canonicalize().map_err(|source| {
-        WorkspaceCacheError::Canonicalize {
-            path: workspace_root.to_path_buf(),
-            source,
-        }
-    })?;
+    let canonical =
+        workspace_root
+            .canonicalize()
+            .map_err(|source| WorkspaceCacheError::Canonicalize {
+                path: workspace_root.to_path_buf(),
+                source,
+            })?;
     let path_str = canonical.to_string_lossy();
     let suffix = workspace_path_hash_suffix(path_str.as_ref());
     let slug = workspace_dir_slug(&canonical);
@@ -1447,5 +1448,4 @@ mod tests {
         assert!(id1.contains('-'));
         assert!(id1.len() > 16);
     }
-
 }

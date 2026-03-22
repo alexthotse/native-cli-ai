@@ -151,7 +151,11 @@ pub async fn resolve_model_limits(config: &NcaConfig, model: &str) -> ModelLimit
 fn http_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .user_agent(concat!("nca/", env!("CARGO_PKG_VERSION"), " (context-window lookup)"))
+        .user_agent(concat!(
+            "nca/",
+            env!("CARGO_PKG_VERSION"),
+            " (context-window lookup)"
+        ))
         .build()
 }
 
@@ -212,12 +216,15 @@ async fn fetch_openrouter_context(
 
 fn pick_openrouter<'a>(models: &'a [OpenRouterModel], wanted: &str) -> Option<&'a OpenRouterModel> {
     let w = wanted.to_lowercase();
-    models.iter().find(|m| m.id.to_lowercase() == w).or_else(|| {
-        models.iter().find(|m| {
-            let id = m.id.to_lowercase();
-            id.ends_with(&format!("/{w}"))
+    models
+        .iter()
+        .find(|m| m.id.to_lowercase() == w)
+        .or_else(|| {
+            models.iter().find(|m| {
+                let id = m.id.to_lowercase();
+                id.ends_with(&format!("/{w}"))
+            })
         })
-    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -354,12 +361,7 @@ async fn fetch_openai_context(
     }
 
     let url = format!("{base}/v1/models");
-    let resp = client
-        .get(&url)
-        .bearer_auth(api_key)
-        .send()
-        .await
-        .ok()?;
+    let resp = client.get(&url).bearer_auth(api_key).send().await.ok()?;
     if !resp.status().is_success() {
         tracing::debug!(status = %resp.status(), url = %url, "openai models request failed");
         return None;
@@ -400,13 +402,11 @@ mod tests {
 
     #[test]
     fn anthropic_pick_prefix() {
-        let models = vec![
-            AnthropicModel {
-                id: "claude-3-5-sonnet-20241022".into(),
-                max_input_tokens: Some(200_000),
-                max_tokens: Some(8192),
-            },
-        ];
+        let models = vec![AnthropicModel {
+            id: "claude-3-5-sonnet-20241022".into(),
+            max_input_tokens: Some(200_000),
+            max_tokens: Some(8192),
+        }];
         let m = pick_anthropic(&models, "claude-3-5-sonnet").unwrap();
         assert_eq!(m.max_input_tokens, Some(200_000));
     }
@@ -418,10 +418,7 @@ mod tests {
                 { "id": "gpt-4o", "context_window": 128000 }
             ]
         });
-        assert_eq!(
-            openai_context_from_catalog(&v, "gpt-4o"),
-            Some(128_000)
-        );
+        assert_eq!(openai_context_from_catalog(&v, "gpt-4o"), Some(128_000));
         assert_eq!(openai_context_from_catalog(&v, "gpt-4o-mini"), None);
     }
 }

@@ -10,9 +10,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-pub use crate::result::{ExperimentResult, ExperimentStatus};
 pub use crate::metric_parser::MetricParser;
 pub use crate::program::{MetricGoal, ResearchProgram};
+pub use crate::result::{ExperimentResult, ExperimentStatus};
 
 /// Configuration for experiment execution
 #[derive(Debug, Clone)]
@@ -55,9 +55,12 @@ impl ExperimentConfig {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("train.py");
-        
+
         Self {
-            working_dir: script_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")),
+            working_dir: script_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from(".")),
             command: "python".to_string(),
             args: vec![script_name.to_string()],
             time_budget_seconds,
@@ -111,7 +114,8 @@ impl ExperimentRunner {
 
         // Clear/create log file
         if let Some(ref log_path) = log_path {
-            tokio::fs::create_dir_all(log_path.parent().unwrap_or(&self.config.working_dir)).await?;
+            tokio::fs::create_dir_all(log_path.parent().unwrap_or(&self.config.working_dir))
+                .await?;
             tokio::fs::write(log_path, b"").await?;
         }
 
@@ -123,7 +127,12 @@ impl ExperimentRunner {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("Failed to spawn: {} {:?}", self.config.command, self.config.args))?;
+            .with_context(|| {
+                format!(
+                    "Failed to spawn: {} {:?}",
+                    self.config.command, self.config.args
+                )
+            })?;
 
         // Set up output capture
         let stdout = child.stdout.take().expect("stdout captured");
@@ -179,9 +188,8 @@ impl ExperimentRunner {
         });
 
         // Wait for process with timeout
-        let timeout_duration = Duration::from_secs(
-            self.config.time_budget_seconds * self.config.kill_timeout_factor
-        );
+        let timeout_duration =
+            Duration::from_secs(self.config.time_budget_seconds * self.config.kill_timeout_factor);
 
         let wait_result = timeout(timeout_duration, child.wait()).await;
 
@@ -201,13 +209,13 @@ impl ExperimentRunner {
                     "Experiment timed out after {} seconds, killing process",
                     self.config.time_budget_seconds
                 );
-                
+
                 // Kill synchronously
                 let _ = child.kill().await;
-                
+
                 // Wait a moment for cleanup
                 let _ = timeout(Duration::from_secs(5), child.wait()).await;
-                
+
                 None // Indicates timeout
             }
         };
@@ -221,13 +229,16 @@ impl ExperimentRunner {
             let output = output_arc.lock().await;
             output.join("\n")
         };
-        
+
         let elapsed = start_time.elapsed();
 
         // Determine success and extract metrics
         let (status, parsed_metrics) = if let Some(code) = exit_status.and_then(|s| s.code()) {
             if code == 0 {
-                (ExperimentStatus::Keep, self.metric_parser.extract_all(&output))
+                (
+                    ExperimentStatus::Keep,
+                    self.metric_parser.extract_all(&output),
+                )
             } else {
                 (ExperimentStatus::Crash, None)
             }

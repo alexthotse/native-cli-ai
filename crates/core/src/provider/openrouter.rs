@@ -165,7 +165,12 @@ mod tests {
 
         let provider = OpenRouterProvider::from_config(&config).expect("provider");
         let stream = provider
-            .chat(&[Message::user("hello")], &[], "", std::path::Path::new("."))
+            .chat(
+                &[Message::user("hello")],
+                &[],
+                "",
+                std::path::Path::new("."),
+            )
             .await
             .expect("chat stream");
 

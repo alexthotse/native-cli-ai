@@ -162,12 +162,16 @@ impl ResearchProgram {
                     "files" | "file configuration" => {
                         // Parse file list
                         i += 1;
-                        while i < lines.len() && !lines[i].trim().is_empty()
+                        while i < lines.len()
+                            && !lines[i].trim().is_empty()
                             && !lines[i].trim().starts_with("## ")
                         {
                             let file_line = lines[i].trim();
                             if file_line.starts_with('-') || file_line.starts_with('*') {
-                                let file_content = file_line.trim_start_matches('-').trim_start_matches('*').trim();
+                                let file_content = file_line
+                                    .trim_start_matches('-')
+                                    .trim_start_matches('*')
+                                    .trim();
                                 if file_content.to_lowercase().contains("editable") {
                                     if let Some(path) = extract_file_path(file_content) {
                                         editable_files.push(EditableFile::new(path));
@@ -191,7 +195,8 @@ impl ResearchProgram {
                     "metric" | "metrics" => {
                         // Parse metric configuration
                         i += 1;
-                        while i < lines.len() && !lines[i].trim().is_empty()
+                        while i < lines.len()
+                            && !lines[i].trim().is_empty()
                             && !lines[i].trim().starts_with("## ")
                         {
                             let metric_line = lines[i].trim().to_lowercase();
@@ -200,7 +205,9 @@ impl ResearchProgram {
                                 if let Some(cmd) = cmd {
                                     metric_command.command = cmd.trim().to_string();
                                 }
-                            } else if metric_line.contains("regex:") || metric_line.contains("parse:") {
+                            } else if metric_line.contains("regex:")
+                                || metric_line.contains("parse:")
+                            {
                                 let regex = extract_value(lines[i], vec!["regex:", "parse:"]);
                                 if let Some(regex) = regex {
                                     // Strip backticks from regex value
@@ -208,9 +215,12 @@ impl ResearchProgram {
                                     metric_command.parse_regex = regex.to_string();
                                 }
                             } else if metric_line.contains("goal:") {
-                                if metric_line.contains("minimize") || metric_line.contains("lower") {
+                                if metric_line.contains("minimize") || metric_line.contains("lower")
+                                {
                                     metric_goal = MetricGoal::Minimize;
-                                } else if metric_line.contains("maximize") || metric_line.contains("higher") {
+                                } else if metric_line.contains("maximize")
+                                    || metric_line.contains("higher")
+                                {
                                     metric_goal = MetricGoal::Maximize;
                                 }
                             }
@@ -220,19 +230,26 @@ impl ResearchProgram {
                     }
                     "constraints" | "settings" | "config" => {
                         i += 1;
-                        while i < lines.len() && !lines[i].trim().is_empty()
+                        while i < lines.len()
+                            && !lines[i].trim().is_empty()
                             && !lines[i].trim().starts_with("## ")
                         {
                             let constraint_line = lines[i].trim().to_lowercase();
-                            if constraint_line.contains("time budget") || constraint_line.contains("timeout") {
+                            if constraint_line.contains("time budget")
+                                || constraint_line.contains("timeout")
+                            {
                                 if let Some(secs) = extract_number(lines[i]) {
                                     time_budget_seconds = secs;
                                 }
-                            } else if constraint_line.contains("max memory") || constraint_line.contains("memory limit") {
+                            } else if constraint_line.contains("max memory")
+                                || constraint_line.contains("memory limit")
+                            {
                                 if let Some(mem) = extract_float(lines[i]) {
                                     max_memory_gb = Some(mem);
                                 }
-                            } else if !lines[i].trim().starts_with('-') && !lines[i].trim().starts_with('*') {
+                            } else if !lines[i].trim().starts_with('-')
+                                && !lines[i].trim().starts_with('*')
+                            {
                                 extra_constraints.push(lines[i].trim().to_string());
                             }
                             i += 1;
@@ -255,7 +272,11 @@ impl ResearchProgram {
                     }
                     instructions.push_str(line);
                 }
-            } else if !line.is_empty() && !line.starts_with('#') && !line.starts_with('-') && !line.starts_with('*') {
+            } else if !line.is_empty()
+                && !line.starts_with('#')
+                && !line.starts_with('-')
+                && !line.starts_with('*')
+            {
                 // Accumulate as description
                 if !description.is_empty() {
                     description.push(' ');
@@ -271,7 +292,9 @@ impl ResearchProgram {
             name = "Unnamed Research".to_string();
         }
         if metric_command.command.is_empty() {
-            return Err(anyhow::anyhow!("Missing metric command in research program"));
+            return Err(anyhow::anyhow!(
+                "Missing metric command in research program"
+            ));
         }
         if metric_command.parse_regex.is_empty() {
             // Try to use a sensible default
@@ -323,7 +346,10 @@ impl ResearchProgram {
             self.metric_command.command
         ));
         instructions.push_str(&format!("- **Goal**: {}\n", self.metric_goal));
-        instructions.push_str(&format!("- **Time budget**: {} seconds\n", self.time_budget_seconds));
+        instructions.push_str(&format!(
+            "- **Time budget**: {} seconds\n",
+            self.time_budget_seconds
+        ));
 
         if let Some(max_mem) = self.max_memory_gb {
             instructions.push_str(&format!("- **Max memory**: {} GB\n", max_mem));
@@ -337,7 +363,10 @@ impl ResearchProgram {
         }
 
         if !self.instructions.is_empty() {
-            instructions.push_str(&format!("\n## Research Instructions\n{}\n", self.instructions));
+            instructions.push_str(&format!(
+                "\n## Research Instructions\n{}\n",
+                self.instructions
+            ));
         }
 
         instructions
@@ -362,7 +391,10 @@ You are running in **autonomous research mode**. Your goal is to improve the met
 - Baseline metric: {{baseline_metric}}
 
 ## Files You May Edit
-"#, metric = self.metric_command.command, goal_text = goal_text, name = self.name
+"#,
+            metric = self.metric_command.command,
+            goal_text = goal_text,
+            name = self.name
         );
 
         for file in &self.editable_files {
@@ -380,9 +412,7 @@ You are running in **autonomous research mode**. Your goal is to improve the met
 - **Metric extraction**: `{}`
 - **Goal**: {}
 ",
-            self.time_budget_seconds,
-            self.metric_command.command,
-            goal_text
+            self.time_budget_seconds, self.metric_command.command, goal_text
         ));
 
         if let Some(max_mem) = self.max_memory_gb {
@@ -397,7 +427,10 @@ You are running in **autonomous research mode**. Your goal is to improve the met
         }
 
         if !self.instructions.is_empty() {
-            section.push_str(&format!("\n## Research Instructions\n{}\n", self.instructions));
+            section.push_str(&format!(
+                "\n## Research Instructions\n{}\n",
+                self.instructions
+            ));
         }
 
         section.push_str(
@@ -424,7 +457,7 @@ commit	val_bpb	memory_gb	status	description
 - Do NOT ask for permission to continue after setup
 - Run experiments autonomously until interrupted
 - If out of ideas, think harder or try combining previous approaches
-"#
+"#,
         );
 
         section
@@ -447,16 +480,32 @@ fn extract_file_path(line: &str) -> Option<PathBuf> {
     }
     // Try to extract the first word-like token that looks like a file path.
     // This handles cases like "train.py — model code" where em-dash isn't whitespace.
-    for token in line.split(|c: char| c.is_ascii_whitespace() || c == '—' || c == '–' || c == '-' || c == ':' || c == '(' || c == ')' || c == '[' || c == ']') {
+    for token in line.split(|c: char| {
+        c.is_ascii_whitespace()
+            || c == '—'
+            || c == '–'
+            || c == '-'
+            || c == ':'
+            || c == '('
+            || c == ')'
+            || c == '['
+            || c == ']'
+    }) {
         let t = token.trim();
         // Skip empty or punctuation-only
-        if t.is_empty() { continue; }
+        if t.is_empty() {
+            continue;
+        }
         // Skip if it starts with common non-path markers
-        if t.starts_with('#') || t.starts_with('-') || t.starts_with('*') { continue; }
+        if t.starts_with('#') || t.starts_with('-') || t.starts_with('*') {
+            continue;
+        }
         // Accept if it looks like a file (has a known extension, or looks like a path segment)
         if t.contains('.') || t.starts_with("./") || t.starts_with("../") {
             // Trim trailing punctuation
-            let clean = t.trim_end_matches(|c: char| c == '.' || c == ',' || c == ';' || c == '"' || c == '\'');
+            let clean = t.trim_end_matches(|c: char| {
+                c == '.' || c == ',' || c == ';' || c == '"' || c == '\''
+            });
             if !clean.is_empty() && clean != "-" && clean != "—" {
                 return Some(PathBuf::from(clean));
             }
@@ -478,11 +527,14 @@ fn extract_value<'a>(line: &'a str, keys: Vec<&str>) -> Option<&'a str> {
     let line_lower = line.to_lowercase();
     for key in keys {
         if let Some(pos) = line_lower.find(key) {
-            let _after = line[pos..].trim_start_matches(|c: char| !c.is_alphanumeric() && c != ':' && c != '_');
+            let _after = line[pos..]
+                .trim_start_matches(|c: char| !c.is_alphanumeric() && c != ':' && c != '_');
             // Find the actual value after the key
             let key_len = key.len();
             let remaining = &line[pos + key_len..];
-            let value = remaining.trim_start_matches(|c: char| c == ':' || c == ' ' || c == '`' || c == '"' || c == '\'');
+            let value = remaining.trim_start_matches(|c: char| {
+                c == ':' || c == ' ' || c == '`' || c == '"' || c == '\''
+            });
             if !value.is_empty() {
                 return Some(value.trim_end_matches(|c| c == '`' || c == '"' || c == '\''));
             }

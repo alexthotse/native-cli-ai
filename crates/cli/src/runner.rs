@@ -75,7 +75,9 @@ impl SessionRuntime {
         prompt: &str,
         attachments: Vec<nca_common::message::ImageAttachment>,
     ) -> Result<String, ProviderError> {
-        self.supervisor.run_turn_with_images(prompt, &attachments).await
+        self.supervisor
+            .run_turn_with_images(prompt, &attachments)
+            .await
     }
 
     pub async fn finish(&mut self, reason: EndReason) {

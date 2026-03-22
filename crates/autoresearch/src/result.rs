@@ -189,7 +189,7 @@ impl ResultsLogger {
 
         let mut file = File::create(&self.path)
             .with_context(|| format!("Failed to create results file: {:?}", self.path))?;
-        
+
         writeln!(file, "{}", RESULTS_TSV_HEADER)
             .with_context(|| "Failed to write header to results file")?;
 
@@ -225,7 +225,7 @@ impl ResultsLogger {
         let reader = BufReader::new(file);
         let mut results = Vec::new();
         let mut lines = reader.lines();
-        
+
         // Skip header
         if let Some(Ok(line)) = lines.next() {
             if line.trim() != RESULTS_TSV_HEADER.trim() {
@@ -249,7 +249,7 @@ impl ResultsLogger {
     /// Get the best result from the log
     pub fn best(&self, minimize: bool) -> Result<Option<ExperimentResult>> {
         let results = self.load()?;
-        
+
         if results.is_empty() {
             return Ok(None);
         }
@@ -275,11 +275,20 @@ impl ResultsLogger {
     /// Get summary statistics
     pub fn summary(&self, minimize: bool) -> Result<ResultsSummary> {
         let results = self.load()?;
-        
+
         let total = results.len();
-        let kept = results.iter().filter(|r| r.status == ExperimentStatus::Keep).count();
-        let discarded = results.iter().filter(|r| r.status == ExperimentStatus::Discard).count();
-        let crashed = results.iter().filter(|r| r.status == ExperimentStatus::Crash).count();
+        let kept = results
+            .iter()
+            .filter(|r| r.status == ExperimentStatus::Keep)
+            .count();
+        let discarded = results
+            .iter()
+            .filter(|r| r.status == ExperimentStatus::Discard)
+            .count();
+        let crashed = results
+            .iter()
+            .filter(|r| r.status == ExperimentStatus::Crash)
+            .count();
 
         let best = results
             .iter()
@@ -302,7 +311,7 @@ impl ResultsLogger {
     /// Print results as a formatted table
     pub fn print_table(&self) -> Result<()> {
         let results = self.load()?;
-        
+
         if results.is_empty() {
             println!("No experiments recorded yet.");
             return Ok(());
@@ -311,8 +320,10 @@ impl ResultsLogger {
         println!("\n{:=<80}", "");
         println!(" Experiment Results ");
         println!("{:=<80}", "");
-        println!("{:<8} {:>10} {:>10} {:>8}  {}",
-                 "commit", "val_bpb", "mem_gb", "status", "description");
+        println!(
+            "{:<8} {:>10} {:>10} {:>8}  {}",
+            "commit", "val_bpb", "mem_gb", "status", "description"
+        );
         println!("{:-<80}", "");
 
         for result in &results {
@@ -326,8 +337,10 @@ impl ResultsLogger {
             } else {
                 result.description.clone()
             };
-            println!("{:<8} {:>10.6} {:>10.1} {:>8}  {}",
-                     result.commit, result.metric_value, result.memory_gb, status_str, desc);
+            println!(
+                "{:<8} {:>10.6} {:>10.1} {:>8}  {}",
+                result.commit, result.metric_value, result.memory_gb, status_str, desc
+            );
         }
 
         println!("{:-<80}", "");
@@ -337,13 +350,16 @@ impl ResultsLogger {
                 println!("Baseline: {:.6}", baseline);
             }
             if let Some(best) = summary.best_metric {
-                let improvement = summary.baseline_metric
+                let improvement = summary
+                    .baseline_metric
                     .map(|b| (b - best) / b * 100.0)
                     .unwrap_or(0.0);
                 println!("Best: {:.6} ({:.2}% improvement)", best, improvement);
             }
-            println!("\nSummary: {} total, {} kept, {} discarded, {} crashed",
-                     summary.total_experiments, summary.kept, summary.discarded, summary.crashed);
+            println!(
+                "\nSummary: {} total, {} kept, {} discarded, {} crashed",
+                summary.total_experiments, summary.kept, summary.discarded, summary.crashed
+            );
         }
 
         Ok(())
@@ -378,7 +394,7 @@ mod tests {
             ExperimentStatus::Keep,
             "baseline".to_string(),
         );
-        
+
         let row = result.to_tsv_row();
         assert!(row.starts_with("a1b2c3d\t0.997900\t44.0\tkeep\tbaseline"));
     }
@@ -387,7 +403,7 @@ mod tests {
     fn test_result_from_tsv() {
         let row = "a1b2c3d\t0.997900\t44.0\tkeep\tbaseline";
         let result = ExperimentResult::from_tsv_row(row, Utc::now()).unwrap();
-        
+
         assert_eq!(result.commit, "a1b2c3d");
         assert!((result.metric_value - 0.997900).abs() < 0.000001);
         assert_eq!(result.status, ExperimentStatus::Keep);
@@ -402,7 +418,7 @@ mod tests {
 
         let logger = ResultsLogger::new(temp_file.path());
         let results = logger.load().unwrap();
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].commit, "a1b2c3d");
 

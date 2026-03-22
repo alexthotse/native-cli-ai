@@ -1,8 +1,8 @@
 use crate::context_manager::{ContextManager, ContextManagerConfig, ContextStats};
 use crate::ipc::{IpcHandle, IpcServer};
-use crate::model_limits_api;
 use crate::last_session::LastSessionStore;
 use crate::memory_store::{MemoryNote, MemoryStore};
+use crate::model_limits_api;
 use crate::pty::PtyManager;
 use crate::session_store::SessionStore;
 use chrono::Utc;
@@ -414,8 +414,7 @@ impl Supervisor {
                     .send(AgentEvent::ContextWarning {
                         message: format!(
                             "Context window at {}% ({} tokens). Consider summarizing.",
-                            stats.usage_percent,
-                            stats.estimated_tokens
+                            stats.usage_percent, stats.estimated_tokens
                         ),
                     })
                     .await;
@@ -430,10 +429,9 @@ impl Supervisor {
         }
 
         let stats = self.context_manager.stats(&self.agent.messages);
-        
+
         // Don't summarize if we just summarized
-        if self.last_summary_at_tokens > 0 
-            && stats.estimated_tokens < self.last_summary_at_tokens {
+        if self.last_summary_at_tokens > 0 && stats.estimated_tokens < self.last_summary_at_tokens {
             // Context was reduced, reset the flag
             self.last_summary_at_tokens = 0;
         }
@@ -446,8 +444,7 @@ impl Supervisor {
                         phase: "starting".to_string(),
                         message: format!(
                             "Auto-summarizing context ({}% full, {} tokens)",
-                            stats.usage_percent,
-                            stats.estimated_tokens
+                            stats.usage_percent, stats.estimated_tokens
                         ),
                     })
                     .await;
@@ -464,26 +461,35 @@ impl Supervisor {
 
     /// Perform the actual auto-summarization.
     async fn perform_auto_summarize(&mut self) -> Result<(), String> {
-        let messages_to_summarize = self.context_manager.get_messages_to_summarize(&self.agent.messages);
-        
+        let messages_to_summarize = self
+            .context_manager
+            .get_messages_to_summarize(&self.agent.messages);
+
         if messages_to_summarize.is_empty() {
             // Nothing to summarize, use sliding window instead
-            let compacted = self.context_manager.get_sliding_window(&self.agent.messages, None);
+            let compacted = self
+                .context_manager
+                .get_sliding_window(&self.agent.messages, None);
             self.agent.messages = compacted;
             return Ok(());
         }
 
         // Generate summary prompt
         let summary_prompt = self.context_manager.summary_prompt(&messages_to_summarize);
-        
+
         // Try to use the AI to summarize. If the provider supports a quick call,
         // we can use it. Otherwise, fall back to extractive summarization.
         match self.summarize_with_ai(&summary_prompt).await {
             Ok(summary) => {
                 // Apply the summary
-                self.agent.messages = self.context_manager.apply_summary(&self.agent.messages, &summary);
-                self.last_summary_at_tokens = self.context_manager.stats(&self.agent.messages).estimated_tokens;
-                
+                self.agent.messages = self
+                    .context_manager
+                    .apply_summary(&self.agent.messages, &summary);
+                self.last_summary_at_tokens = self
+                    .context_manager
+                    .stats(&self.agent.messages)
+                    .estimated_tokens;
+
                 if let Some(tx) = self.agent.event_sender() {
                     let _ = tx
                         .send(AgentEvent::ContextCompaction {
@@ -500,9 +506,14 @@ impl Supervisor {
             Err(e) => {
                 // Fallback: just use sliding window
                 tracing::warn!("AI summarization failed, using sliding window: {}", e);
-                let compacted = self.context_manager.get_sliding_window(&self.agent.messages, None);
+                let compacted = self
+                    .context_manager
+                    .get_sliding_window(&self.agent.messages, None);
                 self.agent.messages = compacted;
-                self.last_summary_at_tokens = self.context_manager.stats(&self.agent.messages).estimated_tokens;
+                self.last_summary_at_tokens = self
+                    .context_manager
+                    .stats(&self.agent.messages)
+                    .estimated_tokens;
             }
         }
 
@@ -512,21 +523,16 @@ impl Supervisor {
     /// Use AI to generate a summary of the conversation.
     async fn summarize_with_ai(&self, prompt: &str) -> Result<String, String> {
         use nca_common::message::Message;
-        
+
         let messages = vec![Message::user(prompt)];
-        
+
         let mut stream = self
             .agent
             .provider
-            .chat(
-                &messages,
-                &[],
-                &self.model,
-                self.workspace_root.as_path(),
-            )
+            .chat(&messages, &[], &self.model, self.workspace_root.as_path())
             .await
             .map_err(|e| e.to_string())?;
-        
+
         // Collect the response
         let mut summary = String::new();
         while let Some(chunk) = stream.recv().await {
@@ -538,7 +544,7 @@ impl Supervisor {
                 _ => {}
             }
         }
-        
+
         Ok(summary.trim().to_string())
     }
 
@@ -586,9 +592,13 @@ impl Supervisor {
     /// Called on create, resume, run_turn, and finish to keep the pointer fresh.
     pub async fn update_last_session(&self) -> Result<(), String> {
         let store = LastSessionStore::new(
-            self.workspace_root.join(&self.config.session.last_session_file),
+            self.workspace_root
+                .join(&self.config.session.last_session_file),
         );
-        store.save(&self.session_id).await.map_err(|e| e.to_string())
+        store
+            .save(&self.session_id)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     fn current_session_state(&self, updated_at: chrono::DateTime<Utc>) -> SessionState {
@@ -1411,14 +1421,11 @@ pub async fn get_last_session_id(
     workspace_root: &Path,
 ) -> anyhow::Result<Option<String>> {
     // First, try the explicit last-session pointer
-    let store = LastSessionStore::new(
-        workspace_root.join(&config.session.last_session_file),
-    );
+    let store = LastSessionStore::new(workspace_root.join(&config.session.last_session_file));
     match store.load().await {
         Ok(Some(id)) => {
             // Verify the session still exists on disk.
-            let session_store =
-                SessionStore::new(workspace_root.join(&config.session.history_dir));
+            let session_store = SessionStore::new(workspace_root.join(&config.session.history_dir));
             match session_store.load(&id).await {
                 Ok(_) => return Ok(Some(id)),
                 Err(_) => {
@@ -1550,11 +1557,10 @@ mod tests {
         );
 
         let config = nca_common::config::NcaConfig::default();
-        let session_id =
-            get_last_session_id(&config, workspace)
-                .await
-                .expect("get_last_session_id should succeed")
-                .expect("should find a session");
+        let session_id = get_last_session_id(&config, workspace)
+            .await
+            .expect("get_last_session_id should succeed")
+            .expect("should find a session");
 
         // Should find the most recent session
         assert_eq!(session_id, "session-newest");

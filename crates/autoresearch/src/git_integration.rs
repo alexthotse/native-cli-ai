@@ -88,7 +88,7 @@ impl GitManager {
     pub async fn commit(&self, message: &str) -> Result<String> {
         // Stage all changes
         self.run(&["add", "-A"]).await?;
-        
+
         // Check if there are changes to commit
         let status = self.run(&["status", "--porcelain"]).await?;
         if status.trim().is_empty() {
@@ -97,7 +97,7 @@ impl GitManager {
 
         // Commit
         self.run(&["commit", "-m", message]).await?;
-        
+
         // Return the new commit hash
         let commit = self.current_commit().await?;
         tracing::info!("Committed: {} - {}", commit, message);
@@ -132,7 +132,9 @@ impl GitManager {
 
     /// Show files changed in a commit
     pub async fn changed_files(&self, commit: &str) -> Result<Vec<String>> {
-        let output = self.run(&["diff-tree", "--no-commit-id", "--name-only", "-r", commit]).await?;
+        let output = self
+            .run(&["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
+            .await?;
         Ok(output
             .lines()
             .map(|s| s.to_string())
@@ -155,11 +157,9 @@ impl GitManager {
 
     /// Get the log of commits
     pub async fn log(&self, count: usize) -> Result<Vec<CommitInfo>> {
-        let output = self.run(&[
-            "log",
-            &format!("-{}", count),
-            "--format=%H|%s|%ci",
-        ]).await?;
+        let output = self
+            .run(&["log", &format!("-{}", count), "--format=%H|%s|%ci"])
+            .await?;
 
         let commits = output
             .lines()
@@ -181,22 +181,31 @@ impl GitManager {
     }
 
     /// Create a worktree for parallel experiments
-    pub async fn create_worktree(&self, branch: &str, path: &Path, start_commit: Option<&str>) -> Result<()> {
+    pub async fn create_worktree(
+        &self,
+        branch: &str,
+        path: &Path,
+        start_commit: Option<&str>,
+    ) -> Result<()> {
         let mut args = vec!["worktree", "add", "-b", branch, path.to_str().unwrap_or("")];
-        
+
         if let Some(commit) = start_commit {
             args.push(commit);
         }
 
         self.run(&args).await?;
-        tracing::info!("Created worktree at: {} on branch: {}", path.display(), branch);
+        tracing::info!(
+            "Created worktree at: {} on branch: {}",
+            path.display(),
+            branch
+        );
         Ok(())
     }
 
     /// List worktrees
     pub async fn list_worktrees(&self) -> Result<Vec<WorktreeInfo>> {
         let output = self.run(&["worktree", "list", "--porcelain"]).await?;
-        
+
         let mut worktrees = Vec::new();
         let mut current: Option<WorktreeInfo> = None;
 
@@ -283,7 +292,7 @@ mod tests {
 
     async fn init_test_repo() -> Result<(TempDir, GitManager)> {
         let temp = TempDir::new()?;
-        
+
         // Initialize git repo
         Command::new("git")
             .current_dir(temp.path())
@@ -323,16 +332,19 @@ mod tests {
         let (_temp, manager) = init_test_repo().await.unwrap();
         let branch = manager.current_branch().await.unwrap();
         // git init defaults to "master" or "main" depending on version
-        assert!(branch == "master" || branch == "main", "expected master or main, got {branch}");
+        assert!(
+            branch == "master" || branch == "main",
+            "expected master or main, got {branch}"
+        );
     }
 
     #[tokio::test]
     async fn test_commit() {
         let (_temp, manager) = init_test_repo().await.unwrap();
-        
+
         // Create a file
         std::fs::write(manager.repo_path.join("test.txt"), "hello").unwrap();
-        
+
         // Commit
         let commit = manager.commit("Initial commit").await.unwrap();
         assert_eq!(commit.len(), 7); // Short hash
@@ -341,11 +353,11 @@ mod tests {
     #[tokio::test]
     async fn test_is_dirty() {
         let (_temp, manager) = init_test_repo().await.unwrap();
-        
+
         assert!(!manager.is_dirty().await.unwrap());
-        
+
         std::fs::write(manager.repo_path.join("test.txt"), "hello").unwrap();
-        
+
         assert!(manager.is_dirty().await.unwrap());
     }
 }

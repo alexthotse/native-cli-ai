@@ -185,13 +185,13 @@ pub const MODEL_CONTEXT_LIMITS: &[ModelContextLimits] = &[
 /// Detect the context window size for a given model name.
 pub fn detect_context_window(model: &str) -> usize {
     let model_lower = model.to_lowercase();
-    
+
     for limit in MODEL_CONTEXT_LIMITS {
         if limit.pattern != "*" && model_lower.contains(&limit.pattern.to_lowercase()) {
             return limit.context_window;
         }
     }
-    
+
     // Fallback
     32_000
 }
@@ -199,13 +199,13 @@ pub fn detect_context_window(model: &str) -> usize {
 /// Detect the max output tokens for a given model name.
 pub fn detect_max_output_tokens(model: &str) -> usize {
     let model_lower = model.to_lowercase();
-    
+
     for limit in MODEL_CONTEXT_LIMITS {
         if limit.pattern != "*" && model_lower.contains(&limit.pattern.to_lowercase()) {
             return limit.max_output_tokens;
         }
     }
-    
+
     // Fallback
     4096
 }

@@ -309,7 +309,9 @@ fn to_anthropic_messages(
                 let content_out = if blocks.is_empty() {
                     match &message.content {
                         MessageContent::Text(t) => json!(t),
-                        MessageContent::Parts(_) => user_content_value(&message.content, workspace_root)?,
+                        MessageContent::Parts(_) => {
+                            user_content_value(&message.content, workspace_root)?
+                        }
                     }
                 } else {
                     Value::Array(blocks)

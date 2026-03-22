@@ -68,7 +68,10 @@ pub fn import_image_file(
 }
 
 /// Read an image from the system clipboard and store as PNG under the session.
-pub fn paste_clipboard_image(workspace: &Path, session_id: &str) -> Result<ImageAttachment, String> {
+pub fn paste_clipboard_image(
+    workspace: &Path,
+    session_id: &str,
+) -> Result<ImageAttachment, String> {
     let mut clipboard = Clipboard::new().map_err(|e| format!("clipboard: {e}"))?;
     let img = clipboard
         .get_image()
@@ -84,8 +87,8 @@ pub fn paste_clipboard_image(workspace: &Path, session_id: &str) -> Result<Image
         return Err("clipboard image buffer too small".into());
     }
     let rgba: Vec<u8> = img.bytes[..expected].to_vec();
-    let buffer: ImageBuffer<Rgba<u8>, Vec<u8>> =
-        ImageBuffer::from_raw(w, h, rgba).ok_or_else(|| "invalid clipboard image buffer".to_string())?;
+    let buffer: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(w, h, rgba)
+        .ok_or_else(|| "invalid clipboard image buffer".to_string())?;
     let dyn_img = DynamicImage::ImageRgba8(buffer);
 
     let filename = nanos_name("paste", "png");
