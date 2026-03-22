@@ -48,17 +48,13 @@ pub async fn coding_plan_vlm(
     prompt: &str,
     image_data_url: &str,
 ) -> Result<String, ProviderError> {
-    let url = format!(
-        "{}/v1/coding_plan/vlm",
-        api_origin.trim_end_matches('/')
-    );
+    let url = format!("{}/v1/coding_plan/vlm", api_origin.trim_end_matches('/'));
 
     let mut headers = HeaderMap::new();
     headers.insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
-            ProviderError::Configuration(format!("minimax vlm auth header: {e}"))
-        })?,
+        HeaderValue::from_str(&format!("Bearer {api_key}"))
+            .map_err(|e| ProviderError::Configuration(format!("minimax vlm auth header: {e}")))?,
     );
     headers.insert("MM-API-Source", HeaderValue::from_static("nca"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -132,10 +128,7 @@ pub async fn materialize_minimax_user_images(
             continue;
         };
 
-        if !parts
-            .iter()
-            .any(|p| matches!(p, ContentPart::Image { .. }))
-        {
+        if !parts.iter().any(|p| matches!(p, ContentPart::Image { .. })) {
             out.push(msg.clone());
             continue;
         }
@@ -165,10 +158,7 @@ pub async fn materialize_minimax_user_images(
                         sections.push(t.to_string());
                     }
                 }
-                ContentPart::Image {
-                    media_type,
-                    path,
-                } => {
+                ContentPart::Image { media_type, path } => {
                     img_index += 1;
                     let full = workspace_file_path(workspace_root, path);
                     let bytes = std::fs::read(&full).map_err(|e| {
@@ -188,14 +178,8 @@ pub async fn materialize_minimax_user_images(
                         )
                     };
 
-                    let analysis = coding_plan_vlm(
-                        client,
-                        api_origin,
-                        api_key,
-                        &prompt,
-                        &data_url,
-                    )
-                    .await?;
+                    let analysis =
+                        coding_plan_vlm(client, api_origin, api_key, &prompt, &data_url).await?;
 
                     sections.push(format!(
                         "### Attached image {img_index} (MiniMax vision /v1/coding_plan/vlm)\n{analysis}"

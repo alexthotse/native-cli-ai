@@ -93,10 +93,7 @@ impl Default for MetricParser {
             "num_params_m".to_string(),
             Regex::new(r"num_params_M:\s*([\d.]+)").unwrap(),
         );
-        patterns.insert(
-            "depth".to_string(),
-            Regex::new(r"depth:\s*(\d+)").unwrap(),
-        );
+        patterns.insert("depth".to_string(), Regex::new(r"depth:\s*(\d+)").unwrap());
         patterns.insert(
             "batch_size".to_string(),
             Regex::new(r"batch_size:\s*(\d+)").unwrap(),
@@ -288,7 +285,7 @@ mod tests {
     fn test_parse_val_bpb() {
         let parser = MetricParser::default();
         let output = "val_bpb: 0.997900\nother stuff";
-        
+
         let result = parser.extract_val_bpb(output);
         assert!(result.is_some());
         assert!((result.unwrap() - 0.997900).abs() < 0.000001);
@@ -308,7 +305,7 @@ num_params_M: 50.3
 depth: 8"#;
 
         let metrics = parser.extract_all(output).unwrap();
-        
+
         assert!((metrics.val_bpb.unwrap() - 0.997900).abs() < 0.000001);
         assert!((metrics.peak_vram_mb.unwrap() - 45060.2).abs() < 0.1);
         assert_eq!(metrics.num_steps.unwrap(), 953);
@@ -318,11 +315,13 @@ depth: 8"#;
     #[test]
     fn test_custom_regex() {
         let mut parser = MetricParser::new();
-        parser.add_pattern("custom_metric", r"my_metric:\s*([\d.]+)").unwrap();
-        
+        parser
+            .add_pattern("custom_metric", r"my_metric:\s*([\d.]+)")
+            .unwrap();
+
         let output = "my_metric: 42.5\nother stuff";
         let result = parser.extract_with_regex(output, r"my_metric:\s*([\d.]+)");
-        
+
         assert!(result.is_some());
         assert!((result.unwrap() - 42.5).abs() < 0.001);
     }
@@ -331,10 +330,12 @@ depth: 8"#;
     fn test_memory_gb() {
         let parser = MetricParser::default();
         let output = "peak_vram_mb: 45060.2";
-        
-        let mb = parser.extract_with_regex(output, r"peak_vram_mb:\s*([\d.]+)").unwrap();
+
+        let mb = parser
+            .extract_with_regex(output, r"peak_vram_mb:\s*([\d.]+)")
+            .unwrap();
         let gb = mb / 1024.0;
-        
+
         assert!((gb - 44.0).abs() < 0.1);
     }
 }

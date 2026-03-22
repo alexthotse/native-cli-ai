@@ -4,8 +4,8 @@
 //! evaluate results, and decide whether to keep or discard changes.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -70,13 +70,24 @@ pub enum LoopEvent {
     /// Experiment started
     ExperimentStarted { number: u64 },
     /// Experiment completed
-    ExperimentCompleted { number: u64, result: ExperimentResult },
+    ExperimentCompleted {
+        number: u64,
+        result: ExperimentResult,
+    },
     /// Experiment crashed
     ExperimentCrashed { number: u64, error: String },
     /// Metric improved
-    MetricImproved { number: u64, old_metric: f64, new_metric: f64 },
+    MetricImproved {
+        number: u64,
+        old_metric: f64,
+        new_metric: f64,
+    },
     /// Metric regressed
-    MetricRegressed { number: u64, old_metric: f64, new_metric: f64 },
+    MetricRegressed {
+        number: u64,
+        old_metric: f64,
+        new_metric: f64,
+    },
     /// Commit created
     Committed { commit: String },
     /// Reset performed
@@ -84,7 +95,10 @@ pub enum LoopEvent {
     /// Loop completed
     Completed { total_experiments: u64 },
     /// Progress update
-    Progress { experiments_per_hour: f64, eta_minutes: Option<f64> },
+    Progress {
+        experiments_per_hour: f64,
+        eta_minutes: Option<f64>,
+    },
 }
 
 /// Main autonomous research loop
@@ -115,7 +129,7 @@ impl AutoResearchLoop {
     ) -> Result<Self> {
         let workspace = workspace.as_ref();
         let results_path = workspace.join("results.tsv");
-        
+
         // Create git manager for the main repo
         let git = GitManager::new(workspace);
 
@@ -169,7 +183,7 @@ impl AutoResearchLoop {
     pub async fn setup(&mut self, tag: &str) -> Result<()> {
         // Create the autoresearch branch
         let branch_name = format!("autoresearch/{}", tag);
-        
+
         // Check if branch already exists
         if let Ok(current) = self.git.current_branch().await {
             if current == branch_name {
@@ -194,7 +208,7 @@ impl AutoResearchLoop {
 
         // Get the starting commit
         self.current_commit = Some(self.git.current_commit().await?);
-        
+
         // Run baseline experiment if no results exist
         if self.logger.load()?.is_empty() {
             tracing::info!("No previous results found. Running baseline experiment...");
@@ -202,19 +216,25 @@ impl AutoResearchLoop {
         }
 
         // Set initial baseline
-        if let Some(results) = self.logger.best(self.program.metric_goal == MetricGoal::Minimize)? {
+        if let Some(results) = self
+            .logger
+            .best(self.program.metric_goal == MetricGoal::Minimize)?
+        {
             self.baseline_metric = Some(results.metric_value);
             self.baseline_commit = Some(results.commit);
         }
 
-        tracing::info!("Setup complete. Baseline metric: {:?}", self.baseline_metric);
+        tracing::info!(
+            "Setup complete. Baseline metric: {:?}",
+            self.baseline_metric
+        );
         Ok(())
     }
 
     /// Run the baseline experiment
     pub async fn run_baseline(&mut self) -> Result<()> {
         self.experiment_count += 1;
-        
+
         if self.config.verbose {
             println!("\n{:=<60}", "");
             println!(" Running Baseline Experiment ({})", self.experiment_count);
@@ -272,7 +292,10 @@ impl AutoResearchLoop {
         // Commit the changes first
         let commit = match self.git.is_dirty().await? {
             true => {
-                let msg = self.config.commit_template.replace("{description}", description);
+                let msg = self
+                    .config
+                    .commit_template
+                    .replace("{description}", description);
                 match self.git.commit(&msg).await {
                     Ok(c) => c,
                     Err(e) => {
@@ -290,7 +313,7 @@ impl AutoResearchLoop {
 
         // Parse the metric
         let metric_value = self.parse_metric(&output)?;
-        
+
         // Determine if this is an improvement
         let baseline = self.baseline_metric.unwrap_or(f64::INFINITY);
         let is_improvement = match self.program.metric_goal {
@@ -371,7 +394,9 @@ impl AutoResearchLoop {
             }
 
             // Check experiment limit
-            if self.config.max_experiments > 0 && self.experiment_count >= self.config.max_experiments {
+            if self.config.max_experiments > 0
+                && self.experiment_count >= self.config.max_experiments
+            {
                 tracing::info!("Reached experiment limit ({})", self.config.max_experiments);
                 self.set_state(LoopState::Completed);
                 break;
@@ -382,7 +407,10 @@ impl AutoResearchLoop {
                 if self.config.max_time_seconds > 0 {
                     let elapsed = start.elapsed().as_secs();
                     if elapsed >= self.config.max_time_seconds {
-                        tracing::info!("Reached time limit ({} seconds)", self.config.max_time_seconds);
+                        tracing::info!(
+                            "Reached time limit ({} seconds)",
+                            self.config.max_time_seconds
+                        );
                         self.set_state(LoopState::Completed);
                         break;
                     }
@@ -429,10 +457,11 @@ impl AutoResearchLoop {
 
     /// Get progress info
     pub fn progress(&self) -> (u64, Option<f64>) {
-        let elapsed = self.start_time
+        let elapsed = self
+            .start_time
             .map(|s| s.elapsed().as_secs_f64())
             .unwrap_or(0.0);
-        
+
         let experiments_per_hour = if elapsed > 0.0 {
             self.experiment_count as f64 / (elapsed / 3600.0)
         } else {
@@ -445,7 +474,7 @@ impl AutoResearchLoop {
     /// Parse metric from experiment output
     fn parse_metric(&self, output: &ExperimentOutput) -> Result<f64> {
         let parser = MetricParser::new();
-        
+
         // Try val_bpb first
         if let Some(val_bpb) = parser.extract_val_bpb(&output.output) {
             return Ok(val_bpb);
@@ -476,7 +505,8 @@ impl AutoResearchLoop {
     }
 
     fn print_result(&self, result: &ExperimentResult) {
-        let improvement = self.baseline_metric
+        let improvement = self
+            .baseline_metric
             .map(|b| (b - result.metric_value) / b * 100.0)
             .unwrap_or(0.0);
 
@@ -492,12 +522,15 @@ impl AutoResearchLoop {
         println!("  commit: {}", result.commit);
         println!("  metric: {:.6}", result.metric_value);
         println!("  memory: {:.1} GB", result.memory_gb);
-        println!("  time: {:.1}s / {:.1}s", result.training_seconds, result.total_seconds);
-        
+        println!(
+            "  time: {:.1}s / {:.1}s",
+            result.training_seconds, result.total_seconds
+        );
+
         if result.status == ExperimentStatus::Keep {
             println!("  improvement: {:.2}%", improvement);
         }
-        
+
         println!("  status: {}", result.status);
         println!("{}", "-".repeat(60));
     }
@@ -507,7 +540,10 @@ impl AutoResearchLoop {
         println!(" AUTONOMOUS RESEARCH COMPLETE");
         println!("{}", "=".repeat(60));
 
-        if let Ok(summary) = self.logger.summary(self.program.metric_goal == MetricGoal::Minimize) {
+        if let Ok(summary) = self
+            .logger
+            .summary(self.program.metric_goal == MetricGoal::Minimize)
+        {
             println!("\nTotal experiments: {}", summary.total_experiments);
             println!("  Kept: {}", summary.kept);
             println!("  Discarded: {}", summary.discarded);
@@ -517,7 +553,8 @@ impl AutoResearchLoop {
                 println!("\nBaseline metric: {:.6}", baseline);
             }
             if let Some(best) = summary.best_metric {
-                let improvement = summary.baseline_metric
+                let improvement = summary
+                    .baseline_metric
                     .map(|b| (b - best) / b * 100.0)
                     .unwrap_or(0.0);
                 println!("Best metric: {:.6} ({:.2}% improvement)", best, improvement);
@@ -528,8 +565,10 @@ impl AutoResearchLoop {
             let elapsed = start.elapsed();
             println!("\nTotal time: {:?}", elapsed);
             if elapsed.as_secs() > 0 {
-                println!("Experiments per hour: {:.1}", 
-                    self.experiment_count as f64 / (elapsed.as_secs_f64() / 3600.0));
+                println!(
+                    "Experiments per hour: {:.1}",
+                    self.experiment_count as f64 / (elapsed.as_secs_f64() / 3600.0)
+                );
             }
         }
 

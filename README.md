@@ -102,7 +102,7 @@ The main interface is designed to feel like a serious terminal tool, not a toy o
 | `nca doctor` | Check provider readiness, skills, and memory/config paths. |
 | `nca config` | Print effective config and resolved paths. |
 | `nca memory list|add` | Inspect or append workspace memory notes. |
-| `nca skills` | List discovered skills. |
+| `nca skills` | List discovered skills with their source (`AGENTS.md` or skill directory). |
 | `nca mcp` | List configured MCP servers. |
 | `nca completion <shell>` | Generate shell completions. |
 | `nca index build|show` | Build or inspect a cached CLI index under `~/.nca/workspaces/<workspace-id>/`. |
@@ -155,7 +155,10 @@ See [Orchestration Contract](docs/orchestration.md) for the subprocess-facing su
 | `<workspace>/.nca/sessions/<id>.json` | Saved session state. |
 | `<workspace>/.nca/sessions/<id>.events.jsonl` | Event log for the session. |
 | `<workspace>/.nca/memory.json` | Default memory store. |
+| `<workspace>/AGENTS.md` | Repo-local instruction layer plus optional `## Heading` skill manifest. |
 | `<workspace>/.nca/skills/` | Default workspace skill directory. |
+| `~/.nca/skills/` | User-level skill directory. |
+| `~/.claude/skills/` | Imported Claude-style skill directory, if present. |
 | `<repo>/.nca/worktrees/<session-id>` | Worktree path for isolated child sessions. |
 | `$XDG_RUNTIME_DIR/nca/<session_id>.sock` | IPC socket path when `XDG_RUNTIME_DIR` is set. |
 | `/tmp/nca/<session_id>.sock` | IPC socket fallback when `XDG_RUNTIME_DIR` is not set. |
@@ -184,12 +187,15 @@ The system prompt is layered in this order:
 
 1. Built-in harness prompt
 2. Permission-mode guidance
-3. Project instructions from `.ncarc`
-4. Local instructions from `.nca/instructions.md`
-5. Discovered skills summary
-6. Orchestration context
+3. Project guidance from `AGENTS.md`
+4. Project instructions from `.ncarc`
+5. Local instructions from `.nca/instructions.md`
+6. Discovered skills summary
+7. Orchestration context
 
 The built-in tool surface includes filesystem editing, search, diffing, patching, shell execution, web access, `ask_question`, and `spawn_subagent`. MCP tools are loaded dynamically when configured, so the available tool set can grow with your environment.
+
+`AGENTS.md` now affects the model in two ways: the full file is layered into the system prompt as repo guidance, and each `## Heading` is also discovered as a slash-invokable skill. Optional leading directive bullets can set `model=...`, `permission_mode=...`, and `context=inline|fork` for the skill form.
 
 ## Crate Layout
 

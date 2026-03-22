@@ -52,7 +52,7 @@ Response style:
 - State important constraints, risks, and verification results plainly.
 "#;
 
-/// Build the layered system prompt from built-in + project + local instructions.
+/// Build the layered system prompt from built-in + AGENTS.md + project + local instructions.
 pub fn build_system_prompt(
     config: &NcaConfig,
     workspace_root: &Path,
@@ -64,6 +64,12 @@ pub fn build_system_prompt(
         sections.push(BUILT_IN_SYSTEM_PROMPT.trim().to_string());
         if let Some(mode_section) = permission_mode_section(config.permissions.mode) {
             sections.push(mode_section);
+        }
+    }
+
+    if let Some(text) = read_if_exists(&workspace_root.join("AGENTS.md")) {
+        if !text.trim().is_empty() {
+            sections.push(format!("AGENTS.md Instructions:\n{}", text.trim()));
         }
     }
 
@@ -213,6 +219,7 @@ mod tests {
         };
         let temp = tempdir().expect("tempdir");
         fs::create_dir_all(temp.path().join(".nca/skills/review")).expect("create skills dir");
+        fs::write(temp.path().join("AGENTS.md"), "agent rule").expect("write AGENTS.md");
         fs::write(temp.path().join(".ncarc"), "project rule").expect("write project instructions");
         fs::create_dir_all(temp.path().join(".nca")).expect("create local dir");
         fs::write(temp.path().join(".nca/instructions.md"), "local rule")
@@ -239,6 +246,9 @@ mod tests {
         let permission_idx = prompt
             .find("Permission Mode: plan")
             .expect("permission section");
+        let agents_idx = prompt
+            .find("AGENTS.md Instructions:\nagent rule")
+            .expect("agents instructions");
         let project_idx = prompt
             .find("Project Instructions:\nproject rule")
             .expect("project instructions");
@@ -251,17 +261,19 @@ mod tests {
             .expect("orchestration section");
 
         assert!(identity_idx < permission_idx);
-        assert!(permission_idx < project_idx);
+        assert!(permission_idx < agents_idx);
+        assert!(agents_idx < project_idx);
         assert!(project_idx < local_idx);
         assert!(local_idx < skills_idx);
         assert!(skills_idx < orchestration_idx);
     }
 
     #[test]
-    fn project_and_local_instructions_are_added_not_replacing_built_in_prompt() {
+    fn agents_project_and_local_instructions_are_added_not_replacing_built_in_prompt() {
         let config = NcaConfig::default();
         let temp = tempdir().expect("tempdir");
         fs::create_dir_all(temp.path().join(".nca")).expect("create local dir");
+        fs::write(temp.path().join("AGENTS.md"), "agents override").expect("write AGENTS.md");
         fs::write(temp.path().join(".ncarc"), "project override").expect("write .ncarc");
         fs::write(temp.path().join(".nca/instructions.md"), "local override")
             .expect("write local instructions");
@@ -269,6 +281,7 @@ mod tests {
         let prompt = build_system_prompt(&config, temp.path(), None);
 
         assert!(prompt.contains("Product priorities:"));
+        assert!(prompt.contains("AGENTS.md Instructions:\nagents override"));
         assert!(prompt.contains("Project Instructions:\nproject override"));
         assert!(prompt.contains("Local Instructions:\nlocal override"));
     }

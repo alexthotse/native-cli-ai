@@ -1,6 +1,6 @@
 //! Full-screen session TUI: transcript, streaming assistant, composer.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::state::{ApprovalRequest, DisplayBlock, TuiSessionState};
@@ -17,6 +17,7 @@ use crossterm::{
     },
 };
 use nca_common::event::QuestionSelection;
+use nca_core::skills::{SkillCatalog, SkillSource};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -77,14 +78,95 @@ fn slash_panel_visible(buffer: &str) -> bool {
     buffer.starts_with('/') && !buffer.contains(' ')
 }
 
-fn filter_slash_commands(buffer: &str) -> Vec<&'static str> {
+/// Entry for the slash panel: either a hardcoded command or a discovered skill.
+#[derive(Clone)]
+pub enum SlashEntry {
+    Command(&'static str),
+    Skill {
+        command: String,
+        description: Option<String>,
+        source: SkillSource,
+    },
+}
+
+impl SlashEntry {
+    fn command_str(&self) -> String {
+        match self {
+            SlashEntry::Command(s) => s.to_string(),
+            SlashEntry::Skill { command, .. } => format!("/{command}"),
+        }
+    }
+
+    fn display_text(&self) -> String {
+        match self {
+            SlashEntry::Command(s) => s.to_string(),
+            SlashEntry::Skill {
+                command,
+                description,
+                source,
+            } => {
+                let tag = match source {
+                    SkillSource::AgentsMd => " (AGENTS.md)",
+                    SkillSource::FileSystem => " (skill dir)",
+                };
+                match description {
+                    Some(desc) => format!("/{command:<20} — {desc}{tag}"),
+                    None => format!("/{command}{tag}"),
+                }
+            }
+        }
+    }
+}
+
+/// Collect skills from SkillCatalog for slash panel display.
+fn collect_skill_entries(workspace_root: &Path, skill_dirs: &[PathBuf]) -> Vec<SlashEntry> {
+    match SkillCatalog::discover(workspace_root, skill_dirs) {
+        Ok(skills) => skills
+            .into_iter()
+            .map(|s| SlashEntry::Skill {
+                command: s.command,
+                description: s.description,
+                source: s.source,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Load all slash-commands: hardcoded commands + discovered skills.
+fn load_slash_entries(workspace_root: &Path, skill_dirs: &[PathBuf]) -> Vec<SlashEntry> {
+    let mut entries: Vec<SlashEntry> = SLASH_COMMANDS
+        .iter()
+        .map(|c| SlashEntry::Command(*c))
+        .collect();
+
+    // Add discovered skills
+    entries.extend(collect_skill_entries(workspace_root, skill_dirs));
+
+    // Sort by command name
+    entries.sort_by(|a, b| {
+        a.command_str()
+            .to_lowercase()
+            .cmp(&b.command_str().to_lowercase())
+    });
+    entries.dedup_by(|a, b| a.command_str().eq_ignore_ascii_case(&b.command_str()));
+    entries
+}
+
+/// Filter slash entries by buffer prefix.
+fn filter_slash_entries<'a>(entries: &'a [SlashEntry], buffer: &str) -> Vec<&'a SlashEntry> {
     if !slash_panel_visible(buffer) {
         return Vec::new();
     }
-    SLASH_COMMANDS
+    let needle = buffer.trim_start_matches('/').to_lowercase();
+    entries
         .iter()
-        .copied()
-        .filter(|c| c.starts_with(buffer))
+        .filter(|e| {
+            e.command_str()
+                .trim_start_matches('/')
+                .to_lowercase()
+                .starts_with(&needle)
+        })
         .collect()
 }
 
@@ -855,6 +937,14 @@ pub fn run_blocking(
 ) -> anyhow::Result<()> {
     let mut terminal = setup_terminal()?;
 
+    // Load slash entries once: hardcoded commands + discovered skills
+    let skill_dirs = vec![PathBuf::from(".nca/skills")];
+    let workspace_root = {
+        let g = state.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        g.workspace_root.clone()
+    };
+    let slash_entries = load_slash_entries(&workspace_root, &skill_dirs);
+
     if show_run_banner {
         if let Ok(mut g) = state.lock() {
             g.blocks.push(DisplayBlock::System(
@@ -870,7 +960,7 @@ pub fn run_blocking(
                 break;
             }
 
-            let filtered = filter_slash_commands(&g.input_buffer);
+            let filtered = filter_slash_entries(&slash_entries, &g.input_buffer);
             let slash_h = slash_panel_height(filtered.len());
 
             terminal.draw(|frame| {
@@ -1174,7 +1264,7 @@ pub fn run_blocking(
                         let max_scroll = filtered.len().saturating_sub(n_show);
                         let list_scroll = g.slash_menu_index.saturating_sub(n_show.saturating_sub(1)).min(max_scroll);
                         let mut slash_lines: Vec<Line> = Vec::new();
-                        for (i, cmd) in filtered[list_scroll..list_scroll + n_show].iter().enumerate() {
+                        for (i, entry) in filtered[list_scroll..list_scroll + n_show].iter().enumerate() {
                             let global = list_scroll + i;
                             let st = if global == g.slash_menu_index {
                                 Style::default()
@@ -1184,7 +1274,7 @@ pub fn run_blocking(
                             } else {
                                 Style::default().fg(theme::TEXT)
                             };
-                            slash_lines.push(Line::from(Span::styled(format!(" {cmd}"), st)));
+                            slash_lines.push(Line::from(Span::styled(entry.display_text(), st)));
                         }
                         if filtered.len() > n_show {
                             slash_lines.push(Line::from(Span::styled(
@@ -1432,7 +1522,7 @@ pub fn run_blocking(
                     let sz = terminal.size()?;
                     let area = Rect::new(0, 0, sz.width, sz.height);
                     let (main_area, _) = layout_with_sidebar(area);
-                    let filtered = filter_slash_commands(&g.input_buffer);
+                    let filtered = filter_slash_entries(&slash_entries, &g.input_buffer);
                     let sh = slash_panel_height(filtered.len());
                     let (tr, _, slash_r, _) = layout_chunks(main_area, sh);
 
@@ -1500,7 +1590,7 @@ pub fn run_blocking(
                             if (inner_y as usize) < n_show {
                                 let idx = list_scroll + inner_y as usize;
                                 if idx < filtered.len() {
-                                    g.input_buffer = filtered[idx].to_string();
+                                    g.input_buffer = filtered[idx].command_str();
                                     g.cursor_char_idx = g.input_buffer.chars().count();
                                     g.slash_menu_index = idx;
                                 }
@@ -1665,10 +1755,10 @@ pub fn run_blocking(
                             }
                         }
                         (KeyCode::Tab, _) => {
-                            let filtered = filter_slash_commands(&g.input_buffer);
+                            let filtered = filter_slash_entries(&slash_entries, &g.input_buffer);
                             if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
                                 let pick = g.slash_menu_index % filtered.len();
-                                g.input_buffer = filtered[pick].to_string();
+                                g.input_buffer = filtered[pick].command_str();
                                 g.cursor_char_idx = g.input_buffer.chars().count();
                             } else {
                                 drop(g);
@@ -1806,7 +1896,7 @@ pub fn run_blocking(
                                     let area = Rect::new(0, 0, sz.width, sz.height);
                                     let (main_area, _) = layout_with_sidebar(area);
                                     let sh = slash_panel_height(
-                                        filter_slash_commands(&g.input_buffer).len(),
+                                        filter_slash_entries(&slash_entries, &g.input_buffer).len(),
                                     );
                                     let (tr, _, _, _) = layout_chunks(main_area, sh);
                                     let total =
@@ -1826,7 +1916,7 @@ pub fn run_blocking(
                             g.cursor_char_idx = (g.cursor_char_idx + 1).min(max);
                         }
                         (KeyCode::Up, _) => {
-                            let filtered = filter_slash_commands(&g.input_buffer);
+                            let filtered = filter_slash_entries(&slash_entries, &g.input_buffer);
                             if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
                                 g.slash_menu_index = g.slash_menu_index.saturating_sub(1);
                             } else {
@@ -1835,7 +1925,7 @@ pub fn run_blocking(
                             }
                         }
                         (KeyCode::Down, _) => {
-                            let filtered = filter_slash_commands(&g.input_buffer);
+                            let filtered = filter_slash_entries(&slash_entries, &g.input_buffer);
                             if !filtered.is_empty() && slash_panel_visible(&g.input_buffer) {
                                 let n = filtered.len();
                                 g.slash_menu_index = (g.slash_menu_index + 1) % n;
@@ -1845,7 +1935,7 @@ pub fn run_blocking(
                                     let area = Rect::new(0, 0, sz.width, sz.height);
                                     let (main_area, _) = layout_with_sidebar(area);
                                     let sh = slash_panel_height(
-                                        filter_slash_commands(&g.input_buffer).len(),
+                                        filter_slash_entries(&slash_entries, &g.input_buffer).len(),
                                     );
                                     let (tr, _, _, _) = layout_chunks(main_area, sh);
                                     let lines = transcript_lines(&g, tr.width.saturating_sub(2));
@@ -1867,7 +1957,7 @@ pub fn run_blocking(
                                 g.input_buffer = cs.into_iter().collect();
                                 g.cursor_char_idx -= 1;
                                 if slash_panel_visible(&g.input_buffer) {
-                                    let f = filter_slash_commands(&g.input_buffer);
+                                    let f = filter_slash_entries(&slash_entries, &g.input_buffer);
                                     if !f.is_empty() {
                                         g.slash_menu_index =
                                             g.slash_menu_index.min(f.len().saturating_sub(1));
@@ -1884,7 +1974,7 @@ pub fn run_blocking(
                             g.input_buffer = cs.into_iter().collect();
                             g.cursor_char_idx += 1;
                             if slash_panel_visible(&g.input_buffer) {
-                                let f = filter_slash_commands(&g.input_buffer);
+                                let f = filter_slash_entries(&slash_entries, &g.input_buffer);
                                 if !f.is_empty() {
                                     g.slash_menu_index =
                                         g.slash_menu_index.min(f.len().saturating_sub(1));

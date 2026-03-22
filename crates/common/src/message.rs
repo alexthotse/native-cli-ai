@@ -25,7 +25,9 @@ pub struct ImageAttachment {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Image {
         media_type: String,
         /// Path relative to workspace root (same as [`ImageAttachment::path`]).
@@ -307,9 +309,7 @@ mod tests {
     #[test]
     fn serde_parts_array_roundtrips() {
         let m = Message::user_with_parts(vec![
-            ContentPart::Text {
-                text: "hi".into(),
-            },
+            ContentPart::Text { text: "hi".into() },
             ContentPart::Image {
                 media_type: "image/png".into(),
                 path: ".nca/sessions/x/a.png".into(),
@@ -334,6 +334,8 @@ mod tests {
         let removed = HashSet::from([".nca/sessions/x/a.png".to_string()]);
 
         assert!(content.strip_image_paths(&removed));
-        assert!(matches!(content, MessageContent::Text(text) if text.contains("image processed and removed after send")));
+        assert!(
+            matches!(content, MessageContent::Text(text) if text.contains("image processed and removed after send"))
+        );
     }
 }

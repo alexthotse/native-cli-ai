@@ -1232,14 +1232,18 @@ fn list_skills(config: &NcaConfig, workspace_root: &PathBuf, json: bool) -> anyh
     if json {
         let output: Vec<_> = skills
             .into_iter()
-            .map(|skill| SkillOutput {
-                name: skill.name,
-                command: skill.command,
-                description: skill.description,
-                model: skill.model,
-                permission_mode: skill.permission_mode.map(|mode| format!("{mode:?}")),
-                context: format!("{:?}", skill.context),
-                directory: skill.directory,
+            .map(|skill| {
+                let source = skill.source_label().to_string();
+                SkillOutput {
+                    name: skill.name,
+                    command: skill.command,
+                    description: skill.description,
+                    model: skill.model,
+                    permission_mode: skill.permission_mode.map(|mode| format!("{mode:?}")),
+                    context: format!("{:?}", skill.context),
+                    source,
+                    directory: skill.directory,
+                }
             })
             .collect();
         print_json(&output, false)?;
@@ -1578,6 +1582,7 @@ struct SkillOutput {
     model: Option<String>,
     permission_mode: Option<String>,
     context: String,
+    source: String,
     directory: PathBuf,
 }
 
