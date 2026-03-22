@@ -114,6 +114,8 @@ pub struct TuiSessionState {
     pub connect_search: String,
     /// Index among selectable provider rows (not section headers).
     pub connect_menu_index: usize,
+    /// Scroll offset for the connect modal viewport.
+    pub connect_modal_scroll: usize,
     /// API key entry modal (used by `/connect` and `/apikey` TUI flows).
     pub api_key_modal_open: bool,
     pub api_key_target_provider: Option<ProviderKind>,
@@ -131,6 +133,8 @@ pub struct TuiSessionState {
     pub model_picker_search: String,
     pub model_picker_index: usize,
     pub model_picker_entries: Vec<ModelPickerEntry>,
+    /// Scroll offset (first visible row) in the model picker viewport.
+    pub model_picker_scroll: usize,
     /// Ctrl+X leader key pending (next keypress is dispatched as shortcut).
     pub leader_pending: bool,
     /// Permission mode picker popup.
@@ -146,6 +150,8 @@ pub struct TuiSessionState {
     pub session_picker_search: String,
     pub session_picker_index: usize,
     pub session_picker_entries: Vec<String>,
+    /// Scroll offset for the session picker viewport.
+    pub session_picker_scroll: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +216,7 @@ impl TuiSessionState {
             connect_modal_open: false,
             connect_search: String::new(),
             connect_menu_index: 0,
+            connect_modal_scroll: 0,
             api_key_modal_open: false,
             api_key_target_provider: None,
             api_key_input: String::new(),
@@ -223,6 +230,7 @@ impl TuiSessionState {
             model_picker_search: String::new(),
             model_picker_index: 0,
             model_picker_entries: Vec::new(),
+            model_picker_scroll: 0,
             leader_pending: false,
             permission_picker_open: false,
             permission_picker_index: 0,
@@ -233,6 +241,7 @@ impl TuiSessionState {
             session_picker_search: String::new(),
             session_picker_index: 0,
             session_picker_entries: Vec::new(),
+            session_picker_scroll: 0,
         }
     }
 
@@ -240,12 +249,14 @@ impl TuiSessionState {
         self.connect_modal_open = true;
         self.connect_search.clear();
         self.connect_menu_index = 0;
+        self.connect_modal_scroll = 0;
     }
 
     pub fn close_connect_modal(&mut self) {
         self.connect_modal_open = false;
         self.connect_search.clear();
         self.connect_menu_index = 0;
+        self.connect_modal_scroll = 0;
     }
 
     pub fn open_api_key_modal(
@@ -287,6 +298,7 @@ impl TuiSessionState {
         self.model_picker_open = true;
         self.model_picker_search.clear();
         self.model_picker_index = 0;
+        self.model_picker_scroll = 0;
         self.model_picker_entries = entries;
     }
 
@@ -294,6 +306,7 @@ impl TuiSessionState {
         self.model_picker_open = false;
         self.model_picker_search.clear();
         self.model_picker_index = 0;
+        self.model_picker_scroll = 0;
         self.model_picker_entries.clear();
     }
 
@@ -322,6 +335,7 @@ impl TuiSessionState {
         self.session_picker_search.clear();
         self.session_picker_index = entries.iter().position(|e| e == current).unwrap_or(0);
         self.session_picker_entries = entries;
+        self.session_picker_scroll = 0;
     }
 
     pub fn close_session_picker(&mut self) {
@@ -329,6 +343,7 @@ impl TuiSessionState {
         self.session_picker_search.clear();
         self.session_picker_index = 0;
         self.session_picker_entries.clear();
+        self.session_picker_scroll = 0;
     }
 
     pub fn open_provider_picker(&mut self, current: ProviderKind, for_api_key: bool) {

@@ -1918,38 +1918,65 @@ pub fn run_blocking(
 
                 if g.session_picker_open {
                     let filter = g.session_picker_search.to_ascii_lowercase();
-                    let filtered: Vec<(usize, &String)> = g.session_picker_entries.iter().enumerate()
+                    let filtered_indices: Vec<usize> = g.session_picker_entries.iter().enumerate()
                         .filter(|(_, s)| filter.is_empty() || s.to_ascii_lowercase().contains(&filter))
+                        .map(|(i, _)| i)
                         .collect();
-                    let n_show = filtered.len().clamp(1, 16);
-                    let rows = (n_show as u16).saturating_add(8).max(10);
+                    const SESSION_PICKER_MAX_ROWS: usize = 16;
+                    let n_filtered = filtered_indices.len();
+                    let viewport_rows = n_filtered.min(SESSION_PICKER_MAX_ROWS);
+                    let rows = (viewport_rows as u16).saturating_add(8).max(10);
                     let popup_area = centered_rect(area, 56, rows);
-                    let pick = g.session_picker_index.min(filtered.len().saturating_sub(1));
-                    let list_scroll = pick.saturating_sub(8);
-                    let list_end = (list_scroll + 16).min(filtered.len());
+                    let pick = g.session_picker_index.min(n_filtered.saturating_sub(1));
+
+                    if pick < g.session_picker_scroll {
+                        g.session_picker_scroll = pick;
+                    } else if viewport_rows > 0 && pick >= g.session_picker_scroll + viewport_rows {
+                        g.session_picker_scroll = pick.saturating_sub(viewport_rows - 1);
+                    }
+                    g.session_picker_scroll = g.session_picker_scroll.min(n_filtered.saturating_sub(viewport_rows));
+                    let list_start = g.session_picker_scroll;
+                    let list_end = (list_start + viewport_rows).min(n_filtered);
+
+                    let search_display = if g.session_picker_search.is_empty() {
+                        "type to filter".to_string()
+                    } else {
+                        g.session_picker_search.clone()
+                    };
                     let mut lines: Vec<Line> = vec![
                         Line::from(vec![
                             Span::styled(" Search ", Style::default().fg(theme::MUTED).add_modifier(Modifier::BOLD)),
-                            Span::styled(
-                                if g.session_picker_search.is_empty() { "type to filter" } else { g.session_picker_search.as_str() },
-                                Style::default().fg(theme::TEXT),
-                            ),
+                            Span::styled(search_display, Style::default().fg(theme::TEXT)),
                         ]),
                         Line::default(),
                     ];
-                    if filtered.is_empty() {
+                    if filtered_indices.is_empty() {
                         lines.push(Line::from(Span::styled(" No matching sessions", Style::default().fg(theme::MUTED))));
                     } else {
-                        for (vis_idx, &(_, id)) in filtered[list_scroll..list_end].iter().enumerate() {
-                            let global = list_scroll + vis_idx;
-                            let is_current = id == &g.session_id;
+                        if list_start > 0 {
+                            lines.push(Line::from(Span::styled(
+                                format!("  ▲ {} more", list_start),
+                                Style::default().fg(theme::MUTED),
+                            )));
+                        }
+                        let current_session_id = g.session_id.clone();
+                        for vis_idx in list_start..list_end {
+                            let id = &g.session_picker_entries[filtered_indices[vis_idx]];
+                            let is_current = id == &current_session_id;
                             let marker = if is_current { " *" } else { "" };
-                            let st = if global == pick {
+                            let st = if vis_idx == pick {
                                 Style::default().fg(Color::Black).bg(theme::USER).add_modifier(Modifier::BOLD)
                             } else {
                                 Style::default().fg(theme::TEXT)
                             };
                             lines.push(Line::from(Span::styled(format!(" {id}{marker}"), st)));
+                        }
+                        let remaining_below = n_filtered.saturating_sub(list_end);
+                        if remaining_below > 0 {
+                            lines.push(Line::from(Span::styled(
+                                format!("  ▼ {} more", remaining_below),
+                                Style::default().fg(theme::MUTED),
+                            )));
                         }
                     }
                     lines.push(Line::default());
@@ -2071,7 +2098,11 @@ pub fn run_blocking(
                 // Model picker popup.
                 if g.model_picker_open {
                     let filter = g.model_picker_search.to_ascii_lowercase();
-                    let visible: Vec<(usize, &ModelPickerEntry)> = g
+
+                    // Pre-compute indices for visible/selectable items and scroll
+                    // without holding an immutable borrow on `g` that conflicts
+                    // with the scroll update.
+                    let vis_indices: Vec<usize> = g
                         .model_picker_entries
                         .iter()
                         .enumerate()
@@ -2081,23 +2112,43 @@ pub fn run_blocking(
                                 || e.label.to_ascii_lowercase().contains(&filter)
                                 || e.detail.to_ascii_lowercase().contains(&filter)
                         })
+                        .map(|(i, _)| i)
                         .collect();
-                    let selectable: Vec<usize> = visible
+                    let selectable_vis: Vec<usize> = vis_indices
                         .iter()
                         .enumerate()
-                        .filter(|(_, (_, e))| !e.is_header)
+                        .filter(|&(_, &orig)| !g.model_picker_entries[orig].is_header)
                         .map(|(vi, _)| vi)
                         .collect();
-                    let n_sel = selectable.len();
-                    let body = visible.len().max(1);
-                    let popup_h = (body as u16).saturating_add(9).min(24).max(10);
-                    let popup_area = centered_rect(area, 62, popup_h);
+                    let n_sel = selectable_vis.len();
                     let pick = if n_sel > 0 {
                         g.model_picker_index.min(n_sel - 1)
                     } else {
                         0
                     };
-                    let selected_vis_idx = selectable.get(pick).copied();
+                    let selected_vis_idx = selectable_vis.get(pick).copied().unwrap_or(0);
+
+                    const MODEL_PICKER_MAX_ROWS: usize = 18;
+                    let n_visible = vis_indices.len();
+                    let viewport_rows = n_visible.min(MODEL_PICKER_MAX_ROWS);
+                    let popup_h = (viewport_rows as u16).saturating_add(7).max(10);
+                    let popup_area = centered_rect(area, 62, popup_h);
+
+                    // Keep the selected item visible within the viewport.
+                    if selected_vis_idx < g.model_picker_scroll {
+                        g.model_picker_scroll = selected_vis_idx;
+                    } else if viewport_rows > 0 && selected_vis_idx >= g.model_picker_scroll + viewport_rows {
+                        g.model_picker_scroll = selected_vis_idx.saturating_sub(viewport_rows - 1);
+                    }
+                    g.model_picker_scroll = g.model_picker_scroll.min(n_visible.saturating_sub(viewport_rows));
+                    let list_start = g.model_picker_scroll;
+                    let list_end = (list_start + viewport_rows).min(n_visible);
+
+                    let search_display = if g.model_picker_search.is_empty() {
+                        "type to filter…".to_string()
+                    } else {
+                        g.model_picker_search.clone()
+                    };
                     let mut lines: Vec<Line> = vec![
                         Line::from(vec![
                             Span::styled(
@@ -2107,23 +2158,26 @@ pub fn run_blocking(
                                     .add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
-                                if g.model_picker_search.is_empty() {
-                                    "type to filter…"
-                                } else {
-                                    g.model_picker_search.as_str()
-                                },
+                                search_display,
                                 Style::default().fg(theme::TEXT),
                             ),
                         ]),
                         Line::default(),
                     ];
-                    if visible.is_empty() {
+                    if vis_indices.is_empty() {
                         lines.push(Line::from(Span::styled(
                             " No models match",
                             Style::default().fg(theme::MUTED),
                         )));
                     } else {
-                        for (vi, (_, entry)) in visible.iter().enumerate() {
+                        if list_start > 0 {
+                            lines.push(Line::from(Span::styled(
+                                format!("  ▲ {} more", list_start),
+                                Style::default().fg(theme::MUTED),
+                            )));
+                        }
+                        for vi in list_start..list_end {
+                            let entry = &g.model_picker_entries[vis_indices[vi]];
                             if entry.is_header {
                                 lines.push(Line::from(Span::styled(
                                     format!(" {}", entry.label),
@@ -2132,7 +2186,7 @@ pub fn run_blocking(
                                         .add_modifier(Modifier::BOLD),
                                 )));
                             } else {
-                                let is_sel = selected_vis_idx == Some(vi);
+                                let is_sel = selected_vis_idx == vi;
                                 let main_st = if is_sel {
                                     Style::default()
                                         .fg(Color::Black)
@@ -2151,6 +2205,13 @@ pub fn run_blocking(
                                     Span::styled(format!("  {}", entry.detail), sub_st),
                                 ]));
                             }
+                        }
+                        let remaining_below = n_visible.saturating_sub(list_end);
+                        if remaining_below > 0 {
+                            lines.push(Line::from(Span::styled(
+                                format!("  ▼ {} more", remaining_below),
+                                Style::default().fg(theme::MUTED),
+                            )));
                         }
                     }
                     lines.push(Line::default());
@@ -2503,7 +2564,7 @@ pub fn run_blocking(
                             (KeyCode::Down, _) => {
                                 if selectable_count > 0 {
                                     g.model_picker_index =
-                                        (g.model_picker_index + 1) % selectable_count;
+                                        (g.model_picker_index + 1).min(selectable_count - 1);
                                 }
                             }
                             (KeyCode::Enter, _) => {
@@ -2535,10 +2596,12 @@ pub fn run_blocking(
                             (KeyCode::Backspace, _) => {
                                 g.model_picker_search.pop();
                                 g.model_picker_index = 0;
+                                g.model_picker_scroll = 0;
                             }
                             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                                 g.model_picker_search.push(c);
                                 g.model_picker_index = 0;
+                                g.model_picker_scroll = 0;
                             }
                             _ => {}
                         }
@@ -2562,7 +2625,7 @@ pub fn run_blocking(
                             (KeyCode::Down, _) => {
                                 if n_sel > 0 {
                                     g.connect_menu_index =
-                                        (g.connect_menu_index + 1) % n_sel;
+                                        (g.connect_menu_index + 1).min(n_sel - 1);
                                 }
                             }
                             (KeyCode::Enter, _) => {
@@ -2577,6 +2640,7 @@ pub fn run_blocking(
                             (KeyCode::Backspace, _) => {
                                 g.connect_search.pop();
                                 g.connect_menu_index = 0;
+                                g.connect_modal_scroll = 0;
                                 let rows2 = build_connect_rows(&g.connect_search);
                                 g.connect_menu_index =
                                     clamp_selection(g.connect_menu_index, &rows2);
@@ -2584,6 +2648,7 @@ pub fn run_blocking(
                             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                                 g.connect_search.push(c);
                                 g.connect_menu_index = 0;
+                                g.connect_modal_scroll = 0;
                                 let rows2 = build_connect_rows(&g.connect_search);
                                 g.connect_menu_index =
                                     clamp_selection(g.connect_menu_index, &rows2);
@@ -2672,7 +2737,7 @@ pub fn run_blocking(
                                 )
                                 .len();
                                 if n > 0 {
-                                    g.branch_picker_index = (g.branch_picker_index + 1) % n;
+                                    g.branch_picker_index = (g.branch_picker_index + 1).min(n - 1);
                                 }
                             }
                             (KeyCode::Enter, _) => {
@@ -2780,10 +2845,12 @@ pub fn run_blocking(
                             (KeyCode::Backspace, _) => {
                                 g.session_picker_search.pop();
                                 g.session_picker_index = 0;
+                                g.session_picker_scroll = 0;
                             }
                             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                                 g.session_picker_search.push(c);
                                 g.session_picker_index = 0;
+                                g.session_picker_scroll = 0;
                             }
                             _ => {}
                         }
