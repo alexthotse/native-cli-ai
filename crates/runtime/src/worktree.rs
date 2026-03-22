@@ -169,19 +169,19 @@ impl WorktreeManager {
         if let Ok(entries) = std::fs::read_dir(&worktrees_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_dir() {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        let session_id = name.to_string();
-                        let branch_name = format!("nca/{session_id}");
-                        let base_branch = self.current_branch().unwrap_or_else(|_| "main".into());
-                        result.push(WorktreeInfo {
-                            worktree_path: path,
-                            branch_name,
-                            base_branch,
-                            session_id,
-                            created_at: chrono::Utc::now(),
-                        });
-                    }
+                if path.is_dir()
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                {
+                    let session_id = name.to_string();
+                    let branch_name = format!("nca/{session_id}");
+                    let base_branch = self.current_branch().unwrap_or_else(|_| "main".into());
+                    result.push(WorktreeInfo {
+                        worktree_path: path,
+                        branch_name,
+                        base_branch,
+                        session_id,
+                        created_at: chrono::Utc::now(),
+                    });
                 }
             }
         }
@@ -203,9 +203,7 @@ impl WorktreeManager {
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter_map(|line| {
-                let mut parts = line.splitn(2, '\t');
-                let status = parts.next()?;
-                let path = parts.next()?;
+                let (status, path) = line.split_once('\t')?;
                 let change_type = match status.chars().next()? {
                     'A' => ChangeType::Added,
                     'M' => ChangeType::Modified,

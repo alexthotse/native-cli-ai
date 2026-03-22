@@ -140,10 +140,10 @@ impl OrchestrationContext {
     pub fn from_env() -> Option<Self> {
         let mut metadata = BTreeMap::new();
         for (key, value) in env::vars() {
-            if let Some(meta_key) = key.strip_prefix("NCA_ORCH_META_") {
-                if !value.trim().is_empty() {
-                    metadata.insert(meta_key.to_ascii_lowercase(), value);
-                }
+            if let Some(meta_key) = key.strip_prefix("NCA_ORCH_META_")
+                && !value.trim().is_empty()
+            {
+                metadata.insert(meta_key.to_ascii_lowercase(), value);
             }
         }
 

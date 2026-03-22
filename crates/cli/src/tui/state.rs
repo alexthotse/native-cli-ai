@@ -1,5 +1,6 @@
 //! Transcript + status driven by `AgentEvent`.
 
+use nca_common::config::ProviderKind;
 use nca_common::event::{AgentEvent, InteractiveQuestionPayload};
 use nca_common::message::ImageAttachment;
 use serde_json::Value;
@@ -99,6 +100,72 @@ pub struct TuiSessionState {
     pub branch_picker_branches: Vec<String>,
     /// Bounding rect of the branch chip in the status bar (for click hit-testing).
     pub branch_chip_bounds: Option<ratatui::layout::Rect>,
+    /// Pick default LLM provider (or provider for API key) — TUI overlay.
+    pub provider_picker_open: bool,
+    pub provider_picker_index: usize,
+    /// When true, picking a row sets `pending_api_key_provider` instead of applying provider.
+    pub provider_picker_for_api_key: bool,
+    /// After choosing a provider for API key, next non-command line is the secret.
+    pub pending_api_key_provider: Option<ProviderKind>,
+    /// Selected row when `@` file completion panel is visible.
+    pub at_menu_index: usize,
+    /// OpenCode-style "Connect a provider" modal (`/connect`).
+    pub connect_modal_open: bool,
+    pub connect_search: String,
+    /// Index among selectable provider rows (not section headers).
+    pub connect_menu_index: usize,
+    /// Scroll offset for the connect modal viewport.
+    pub connect_modal_scroll: usize,
+    /// API key entry modal (used by `/connect` and `/apikey` TUI flows).
+    pub api_key_modal_open: bool,
+    pub api_key_target_provider: Option<ProviderKind>,
+    pub api_key_input: String,
+    pub api_key_target_has_existing: bool,
+    /// When true, Enter should connect to this provider after saving/confirming the key.
+    pub api_key_connect_after_save: bool,
+    /// Generic info popup (read-only scrollable lines).
+    pub info_modal_open: bool,
+    pub info_modal_title: String,
+    pub info_modal_lines: Vec<String>,
+    pub info_modal_scroll: usize,
+    /// Model picker popup (searchable model/provider list).
+    pub model_picker_open: bool,
+    pub model_picker_search: String,
+    pub model_picker_index: usize,
+    pub model_picker_entries: Vec<ModelPickerEntry>,
+    /// Scroll offset (first visible row) in the model picker viewport.
+    pub model_picker_scroll: usize,
+    /// Ctrl+X leader key pending (next keypress is dispatched as shortcut).
+    pub leader_pending: bool,
+    /// Permission mode picker popup.
+    pub permission_picker_open: bool,
+    pub permission_picker_index: usize,
+    /// Agent profile picker popup.
+    pub agent_picker_open: bool,
+    pub agent_picker_index: usize,
+    /// Command palette selection index (separate from slash_menu_index).
+    pub palette_index: usize,
+    /// Session picker popup (interactive list with resume).
+    pub session_picker_open: bool,
+    pub session_picker_search: String,
+    pub session_picker_index: usize,
+    pub session_picker_entries: Vec<String>,
+    /// Scroll offset for the session picker viewport.
+    pub session_picker_scroll: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModelPickerAction {
+    SwitchProvider(ProviderKind),
+    ApplyModel(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelPickerEntry {
+    pub label: String,
+    pub detail: String,
+    pub action: ModelPickerAction,
+    pub is_header: bool,
 }
 
 impl TuiSessionState {
@@ -141,7 +208,156 @@ impl TuiSessionState {
             branch_picker_index: 0,
             branch_picker_branches: Vec::new(),
             branch_chip_bounds: None,
+            provider_picker_open: false,
+            provider_picker_index: 0,
+            provider_picker_for_api_key: false,
+            pending_api_key_provider: None,
+            at_menu_index: 0,
+            connect_modal_open: false,
+            connect_search: String::new(),
+            connect_menu_index: 0,
+            connect_modal_scroll: 0,
+            api_key_modal_open: false,
+            api_key_target_provider: None,
+            api_key_input: String::new(),
+            api_key_target_has_existing: false,
+            api_key_connect_after_save: false,
+            info_modal_open: false,
+            info_modal_title: String::new(),
+            info_modal_lines: Vec::new(),
+            info_modal_scroll: 0,
+            model_picker_open: false,
+            model_picker_search: String::new(),
+            model_picker_index: 0,
+            model_picker_entries: Vec::new(),
+            model_picker_scroll: 0,
+            leader_pending: false,
+            permission_picker_open: false,
+            permission_picker_index: 0,
+            agent_picker_open: false,
+            agent_picker_index: 0,
+            palette_index: 0,
+            session_picker_open: false,
+            session_picker_search: String::new(),
+            session_picker_index: 0,
+            session_picker_entries: Vec::new(),
+            session_picker_scroll: 0,
         }
+    }
+
+    pub fn open_connect_modal(&mut self) {
+        self.connect_modal_open = true;
+        self.connect_search.clear();
+        self.connect_menu_index = 0;
+        self.connect_modal_scroll = 0;
+    }
+
+    pub fn close_connect_modal(&mut self) {
+        self.connect_modal_open = false;
+        self.connect_search.clear();
+        self.connect_menu_index = 0;
+        self.connect_modal_scroll = 0;
+    }
+
+    pub fn open_api_key_modal(
+        &mut self,
+        provider: ProviderKind,
+        has_existing: bool,
+        connect_after_save: bool,
+    ) {
+        self.api_key_modal_open = true;
+        self.api_key_target_provider = Some(provider);
+        self.api_key_input.clear();
+        self.api_key_target_has_existing = has_existing;
+        self.api_key_connect_after_save = connect_after_save;
+    }
+
+    pub fn close_api_key_modal(&mut self) {
+        self.api_key_modal_open = false;
+        self.api_key_target_provider = None;
+        self.api_key_input.clear();
+        self.api_key_target_has_existing = false;
+        self.api_key_connect_after_save = false;
+    }
+
+    pub fn open_info_modal(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.info_modal_open = true;
+        self.info_modal_title = title.into();
+        self.info_modal_lines = lines;
+        self.info_modal_scroll = 0;
+    }
+
+    pub fn close_info_modal(&mut self) {
+        self.info_modal_open = false;
+        self.info_modal_title.clear();
+        self.info_modal_lines.clear();
+        self.info_modal_scroll = 0;
+    }
+
+    pub fn open_model_picker(&mut self, entries: Vec<ModelPickerEntry>) {
+        self.model_picker_open = true;
+        self.model_picker_search.clear();
+        self.model_picker_index = 0;
+        self.model_picker_scroll = 0;
+        self.model_picker_entries = entries;
+    }
+
+    pub fn close_model_picker(&mut self) {
+        self.model_picker_open = false;
+        self.model_picker_search.clear();
+        self.model_picker_index = 0;
+        self.model_picker_scroll = 0;
+        self.model_picker_entries.clear();
+    }
+
+    pub fn open_permission_picker(&mut self, current_index: usize) {
+        self.permission_picker_open = true;
+        self.permission_picker_index = current_index;
+    }
+
+    pub fn close_permission_picker(&mut self) {
+        self.permission_picker_open = false;
+        self.permission_picker_index = 0;
+    }
+
+    pub fn open_agent_picker(&mut self, current_index: usize) {
+        self.agent_picker_open = true;
+        self.agent_picker_index = current_index;
+    }
+
+    pub fn close_agent_picker(&mut self) {
+        self.agent_picker_open = false;
+        self.agent_picker_index = 0;
+    }
+
+    pub fn open_session_picker(&mut self, entries: Vec<String>, current: &str) {
+        self.session_picker_open = true;
+        self.session_picker_search.clear();
+        self.session_picker_index = entries.iter().position(|e| e == current).unwrap_or(0);
+        self.session_picker_entries = entries;
+        self.session_picker_scroll = 0;
+    }
+
+    pub fn close_session_picker(&mut self) {
+        self.session_picker_open = false;
+        self.session_picker_search.clear();
+        self.session_picker_index = 0;
+        self.session_picker_entries.clear();
+        self.session_picker_scroll = 0;
+    }
+
+    pub fn open_provider_picker(&mut self, current: ProviderKind, for_api_key: bool) {
+        self.provider_picker_open = true;
+        self.provider_picker_for_api_key = for_api_key;
+        self.provider_picker_index = ProviderKind::ALL
+            .iter()
+            .position(|p| *p == current)
+            .unwrap_or(0);
+    }
+
+    pub fn close_provider_picker(&mut self) {
+        self.provider_picker_open = false;
+        self.provider_picker_for_api_key = false;
     }
 
     pub fn set_busy(&mut self, busy: bool) {
@@ -201,10 +417,10 @@ impl TuiSessionState {
     }
 
     fn flush_stream_before_tool(&mut self) {
-        if let Some(s) = self.streaming_assistant.take() {
-            if !s.trim().is_empty() {
-                self.blocks.push(DisplayBlock::Assistant(s));
-            }
+        if let Some(s) = self.streaming_assistant.take()
+            && !s.trim().is_empty()
+        {
+            self.blocks.push(DisplayBlock::Assistant(s));
         }
     }
 
@@ -483,10 +699,10 @@ fn format_spawn_subagent_input(v: &Value) -> String {
 }
 
 fn format_tool_input(value: &Value) -> String {
-    if let Some(raw) = value.as_str() {
-        if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
-            return serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.to_string());
-        }
+    if let Some(raw) = value.as_str()
+        && let Ok(parsed) = serde_json::from_str::<Value>(raw)
+    {
+        return serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.to_string());
     }
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }

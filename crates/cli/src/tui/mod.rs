@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod bridge;
+pub mod connect_modal;
 pub mod replay;
 pub mod state;
 
@@ -11,4 +12,4 @@ pub use app::{
 };
 pub use bridge::spawn_tui_bridge;
 pub use replay::replay_event_log_into_state;
-pub use state::{DisplayBlock, TuiSessionState};
+pub use state::{DisplayBlock, ModelPickerAction, ModelPickerEntry, TuiSessionState};

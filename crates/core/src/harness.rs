@@ -67,26 +67,24 @@ pub fn build_system_prompt(
         }
     }
 
-    if let Some(text) = read_if_exists(&workspace_root.join("AGENTS.md")) {
-        if !text.trim().is_empty() {
-            sections.push(format!("AGENTS.md Instructions:\n{}", text.trim()));
-        }
+    if let Some(text) = read_if_exists(&workspace_root.join("AGENTS.md"))
+        && !text.trim().is_empty()
+    {
+        sections.push(format!("AGENTS.md Instructions:\n{}", text.trim()));
     }
 
     if let Some(text) =
         read_if_exists(&workspace_root.join(&config.harness.project_instructions_path))
+        && !text.trim().is_empty()
     {
-        if !text.trim().is_empty() {
-            sections.push(format!("Project Instructions:\n{}", text.trim()));
-        }
+        sections.push(format!("Project Instructions:\n{}", text.trim()));
     }
 
     if let Some(text) =
         read_if_exists(&workspace_root.join(&config.harness.local_instructions_path))
+        && !text.trim().is_empty()
     {
-        if !text.trim().is_empty() {
-            sections.push(format!("Local Instructions:\n{}", text.trim()));
-        }
+        sections.push(format!("Local Instructions:\n{}", text.trim()));
     }
 
     if let Some(section) = skills_section(workspace_root, &config.harness.skill_directories) {

@@ -113,10 +113,10 @@ impl IpcClient {
             let reader = BufReader::new(stream);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(event) = serde_json::from_str::<EventEnvelope>(&line) {
-                    if tx.send(event).await.is_err() {
-                        break;
-                    }
+                if let Ok(event) = serde_json::from_str::<EventEnvelope>(&line)
+                    && tx.send(event).await.is_err()
+                {
+                    break;
                 }
             }
         });

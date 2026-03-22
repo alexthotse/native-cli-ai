@@ -75,8 +75,6 @@ impl ApprovalPolicy {
                 | "spawn_subagent"
         );
         let destructive = matches!(tool_name, "delete_path");
-        let execution = matches!(tool_name, "execute_bash" | "run_validation");
-
         match self.config.mode {
             PermissionMode::BypassPermissions => PermissionTier::Allowed,
             PermissionMode::Plan => {
@@ -89,12 +87,8 @@ impl ApprovalPolicy {
             PermissionMode::AcceptEdits => {
                 if destructive {
                     PermissionTier::Ask
-                } else if explicitly_allowed {
+                } else if explicitly_allowed || readonly || file_edit {
                     PermissionTier::Allowed
-                } else if readonly || file_edit {
-                    PermissionTier::Allowed
-                } else if execution {
-                    PermissionTier::Ask
                 } else {
                     PermissionTier::Ask
                 }

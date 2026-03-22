@@ -323,7 +323,7 @@ impl ExperimentOutput {
             self.memory_gb,
             self.training_seconds,
             self.elapsed_seconds,
-            self.status.clone(),
+            self.status,
             self.description.clone(),
         );
         result.peak_vram_mb = self.peak_vram_mb;

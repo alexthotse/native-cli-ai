@@ -395,10 +395,69 @@ Config values are resolved with later sources overriding earlier ones:
 
 ---
 
+## Performance Design Principles
+
+See [research/rust-ratatui-optimization.md](./research/rust-ratatui-optimization.md) for detailed analysis and benchmarks.
+
+### Key Optimization Patterns
+
+**Dirty Flag Rendering**: Ratatui's default behavior redraws at 60 FPS even for static content, causing 7%+ CPU usage in release builds. The solution is event-driven rendering:
+
+```rust
+// Only render when state actually changes
+if app.is_dirty() {
+    terminal.draw(|f| app.render(f));
+    app.clear_dirty();
+}
+```
+
+**Bounded Channels for Backpressure**: Unbounded IPC channels can accumulate infinite messages during load spikes. Use bounded channels to create natural backpressure:
+
+```rust
+// Bounded channel: sender blocks when buffer full
+let (tx, rx) = tokio::sync::mpsc::channel(100);
+```
+
+**Preallocate Collections**: Vec growth involves heap allocation. Preallocate when size is known:
+
+```rust
+let mut rows = Vec::with_capacity(width);
+for _ in 0..width {
+    rows.push(Row::with_capacity(height));
+}
+```
+
+### Binary Size Optimization
+
+Release builds should use aggressive size optimization:
+
+```toml
+[profile.release]
+opt-level = "z"        # Optimize for size
+lto = true             # Link-time optimization
+codegen-units = 1      # Single unit for max optimization
+strip = true           # Remove symbols
+panic = "abort"         # Smaller panic handling
+```
+
+**Expected impact**: 40-50% binary size reduction vs default release build.
+
+### Performance Targets
+
+| Metric | Target | Reference |
+|--------|--------|-----------|
+| Idle CPU | <1% | Ratatui issue #1338 shows 7% baseline |
+| Active typing CPU | <5% | Per-char renders should be minimal |
+| Binary size | <5 MB | Current measurement needed |
+| Cold start | <100ms | |
+
+---
+
 ## Build and Distribution
 
 - **Dev**: `cargo run -p nca-cli`
 - **Release**: `cargo build --release` produces `nca` (CLI).
+- **Size-optimized**: `cargo build --profile release-opt-size` (uses `release-opt-size` profile if defined).
 - **Install**: `cargo install --path crates/cli`.
 - **CI**: GitHub Actions with `cargo test --workspace`, `cargo clippy --workspace`, `cargo fmt --check`.
 - **Cross-compile**: Target `x86_64-unknown-linux-musl` for static Linux binaries. macOS and Windows use default targets.

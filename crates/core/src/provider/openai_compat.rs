@@ -119,10 +119,10 @@ pub fn spawn_openai_stream(
 
                 for choice in choices {
                     let delta = &choice["delta"];
-                    if let Some(text) = delta["content"].as_str() {
-                        if !text.is_empty() {
-                            let _ = tx.send(StreamChunk::TextDelta(text.to_string())).await;
-                        }
+                    if let Some(text) = delta["content"].as_str()
+                        && !text.is_empty()
+                    {
+                        let _ = tx.send(StreamChunk::TextDelta(text.to_string())).await;
                     }
 
                     if let Some(tool_deltas) = delta["tool_calls"].as_array() {

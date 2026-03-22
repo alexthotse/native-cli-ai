@@ -13,8 +13,7 @@ fn parse_json_values_on_line(line: &str) -> Vec<Value> {
     }
     let mut out = Vec::new();
     let de = serde_json::Deserializer::from_str(trimmed);
-    let mut iter = de.into_iter::<Value>();
-    while let Some(res) = iter.next() {
+    for res in de.into_iter::<Value>() {
         match res {
             Ok(v) => out.push(v),
             Err(_) => break,

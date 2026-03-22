@@ -9,10 +9,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/user/native-cli-ai"
+repository = "https://github.com/madebyaris/native-cli-ai"
+homepage = "https://nca-cli.com"
 
 # Release profile optimized for size and speed
 [profile.release]

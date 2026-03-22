@@ -12,19 +12,14 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Metric optimization goal
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricGoal {
     /// Lower is better (e.g., val_bpb, loss)
+    #[default]
     Minimize,
     /// Higher is better (e.g., accuracy)
     Maximize,
-}
-
-impl Default for MetricGoal {
-    fn default() -> Self {
-        Self::Minimize
-    }
 }
 
 impl std::fmt::Display for MetricGoal {
@@ -467,16 +462,16 @@ commit	val_bpb	memory_gb	status	description
 /// Extract file path from a line like "- Editable: `train.py`" or "- `train.py`"
 fn extract_file_path(line: &str) -> Option<PathBuf> {
     // Try to find backtick-quoted path
-    if let Some(start) = line.find('`') {
-        if let Some(end) = line[start + 1..].find('`') {
-            return Some(PathBuf::from(&line[start + 1..start + 1 + end]));
-        }
+    if let Some(start) = line.find('`')
+        && let Some(end) = line[start + 1..].find('`')
+    {
+        return Some(PathBuf::from(&line[start + 1..start + 1 + end]));
     }
     // Try to find quoted path
-    if let Some(start) = line.find('"') {
-        if let Some(end) = line[start + 1..].find('"') {
-            return Some(PathBuf::from(&line[start + 1..start + 1 + end]));
-        }
+    if let Some(start) = line.find('"')
+        && let Some(end) = line[start + 1..].find('"')
+    {
+        return Some(PathBuf::from(&line[start + 1..start + 1 + end]));
     }
     // Try to extract the first word-like token that looks like a file path.
     // This handles cases like "train.py — model code" where em-dash isn't whitespace.
@@ -536,7 +531,7 @@ fn extract_value<'a>(line: &'a str, keys: Vec<&str>) -> Option<&'a str> {
                 c == ':' || c == ' ' || c == '`' || c == '"' || c == '\''
             });
             if !value.is_empty() {
-                return Some(value.trim_end_matches(|c| c == '`' || c == '"' || c == '\''));
+                return Some(value.trim_end_matches(['`', '"', '\'']));
             }
         }
     }
@@ -546,10 +541,10 @@ fn extract_value<'a>(line: &'a str, keys: Vec<&str>) -> Option<&'a str> {
 /// Extract a number from a line (for time budgets)
 fn extract_number(line: &str) -> Option<u64> {
     let re = regex::Regex::new(r"(\d+)").ok()?;
-    if let Some(caps) = re.captures(line) {
-        if let Some(num) = caps.get(1) {
-            return num.as_str().parse().ok();
-        }
+    if let Some(caps) = re.captures(line)
+        && let Some(num) = caps.get(1)
+    {
+        return num.as_str().parse().ok();
     }
     None
 }
@@ -557,10 +552,10 @@ fn extract_number(line: &str) -> Option<u64> {
 /// Extract a float from a line (for memory values)
 fn extract_float(line: &str) -> Option<f64> {
     let re = regex::Regex::new(r"([\d.]+)").ok()?;
-    if let Some(caps) = re.captures(line) {
-        if let Some(num) = caps.get(1) {
-            return num.as_str().parse().ok();
-        }
+    if let Some(caps) = re.captures(line)
+        && let Some(num) = caps.get(1)
+    {
+        return num.as_str().parse().ok();
     }
     None
 }
@@ -614,8 +609,8 @@ Modify train.py to improve val_bpb. Changes are kept if metric improves.
 
         let program = ResearchProgram::from_markdown(content).unwrap();
         assert_eq!(program.name, "NanoGPT Autoresearch");
-        assert!(program.editable_files.len() >= 1);
-        assert!(program.fixed_files.len() >= 1);
+        assert!(!program.editable_files.is_empty());
+        assert!(!program.fixed_files.is_empty());
         assert_eq!(program.time_budget_seconds, 300);
         assert_eq!(program.max_memory_gb, Some(50.0));
     }

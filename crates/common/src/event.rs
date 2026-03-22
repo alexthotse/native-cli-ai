@@ -186,7 +186,7 @@ pub enum AgentCommand {
 #[serde(tag = "type")]
 pub enum AgentResponse {
     SessionState {
-        session: crate::session::SessionState,
+        session: Box<crate::session::SessionState>,
     },
     SessionList {
         sessions: Vec<crate::session::SessionMeta>,

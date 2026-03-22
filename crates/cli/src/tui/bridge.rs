@@ -1,12 +1,11 @@
 //! Event fanout: session log, IPC, and TUI state (no stdout streaming).
 
+use crate::ipc_pending::{ApprovalPendingMap, QuestionPendingMap};
 use crate::tui::state::TuiSessionState;
-use nca_common::event::{AgentEvent, EventEnvelope, QuestionSelection};
+use nca_common::event::{AgentEvent, EventEnvelope};
 use nca_runtime::ipc::IpcHandle;
 use nca_runtime::supervisor;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
 use tokio::{fs::OpenOptions, io::AsyncWriteExt};
 
 struct IpcFanout {
@@ -18,8 +17,8 @@ pub fn spawn_tui_bridge(
     mut rx: tokio::sync::mpsc::Receiver<AgentEvent>,
     log_path: std::path::PathBuf,
     ipc_handle: Option<IpcHandle>,
-    approval_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>>,
-    question_pending: Option<Arc<Mutex<HashMap<String, oneshot::Sender<QuestionSelection>>>>>,
+    approval_pending: Option<ApprovalPendingMap>,
+    question_pending: Option<QuestionPendingMap>,
     state: Arc<Mutex<TuiSessionState>>,
 ) -> tokio::task::JoinHandle<()> {
     let (event_tx_ipc, command_rx) = match ipc_handle {
@@ -54,11 +53,11 @@ pub fn spawn_tui_bridge(
                 let _ = fan.tx.send(line);
             }
 
-            if let Some(file) = log_file.as_mut() {
-                if let Ok(line) = serde_json::to_string(&envelope) {
-                    let _ = file.write_all(line.as_bytes()).await;
-                    let _ = file.write_all(b"\n").await;
-                }
+            if let Some(file) = log_file.as_mut()
+                && let Ok(line) = serde_json::to_string(&envelope)
+            {
+                let _ = file.write_all(line.as_bytes()).await;
+                let _ = file.write_all(b"\n").await;
             }
 
             if let Ok(mut g) = state.lock() {

@@ -1,12 +1,16 @@
+use crate::file_mentions::{
+    at_token_before_cursor, discover_workspace_files, expand_at_file_mentions_default,
+    filter_paths_prefix,
+};
 use crate::prompt::NcaPrompt;
 use crate::runner::{SessionRuntime, dispatch_question_answer, dispatch_tool_approval};
 use crate::slash_commands::SLASH_COMMANDS;
 use crate::tui::{
-    DisplayBlock, TuiCmd, TuiSessionState, git_create_branch, git_current_branch,
-    git_list_branches, git_switch_branch, replay_event_log_into_state, run_blocking,
-    spawn_tui_bridge,
+    DisplayBlock, ModelPickerAction, ModelPickerEntry, TuiCmd, TuiSessionState, git_create_branch,
+    git_current_branch, git_list_branches, git_switch_branch, replay_event_log_into_state,
+    run_blocking, spawn_tui_bridge,
 };
-use nca_common::config::PermissionMode;
+use nca_common::config::{PermissionMode, ProviderKind};
 use nca_common::event::{EndReason, QuestionSelection};
 use nca_core::skills::SkillCatalog;
 use nca_runtime::memory_store::MemoryStore;
@@ -242,13 +246,6 @@ impl Repl {
                         continue;
                     }
 
-                    // File reference: @ prefix for fuzzy file search
-                    if input.starts_with('@') {
-                        let query = input.trim_start_matches('@');
-                        self.handle_file_reference(query).await;
-                        continue;
-                    }
-
                     // Slash commands
                     if input.starts_with('/') {
                         if !self.handle_command(&input, ReplOutput::Stdio).await? {
@@ -257,8 +254,17 @@ impl Repl {
                         continue;
                     }
 
-                    // Regular input to agent
-                    match self.runtime.run_turn(&input).await {
+                    let expanded = match expand_at_file_mentions_default(
+                        &input,
+                        self.runtime.workspace_root(),
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("file mention expansion: {e}");
+                            continue;
+                        }
+                    };
+                    match self.runtime.run_turn(&expanded).await {
                         Ok(output) => {
                             println!("{output}");
                         }
@@ -298,7 +304,7 @@ impl Repl {
 ╠══════════════════════════════════════════════════════════════╣
 ║  Shortcuts:                                                   ║
 ║    ! <cmd>   Run shell command (bash mode)                    ║
-║    @ <file>  Reference a file                                 ║
+║    @path     Inline file mentions (expanded before send)      ║
 ║    / <cmd>   Slash commands                                  ║
 ║    Tab       Switch agent profile (@build/@plan/@review...)   ║
 ║    Ctrl+D    Exit                                            ║
@@ -370,80 +376,16 @@ impl Repl {
         }
     }
 
-    /// Handle file reference (@ prefix) - OpenCode style
-    /// Performs fuzzy file search and shows matching files
-    async fn handle_file_reference(&self, query: &str) {
-        let query = query.trim();
-        let workspace = self.runtime.workspace_root();
-
-        eprintln!("[file] Searching for: {query}");
-
-        // Build find command for fuzzy search
-        let find_cmd = if query.is_empty() {
-            format!(
-                "find . -type f -name '*.rs' -o -name '*.ts' -o -name '*.js' -o -name '*.py' -o -name '*.json' 2>/dev/null | head -20"
-            )
-        } else {
-            // Escape special characters for grep
-            let escaped = query.replace(
-                |c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_',
-                "\\",
-            );
-            format!(
-                "find . -type f \\( -name '*{escaped}*' -o -path '*{escaped}*' \\) 2>/dev/null | head -20"
-            )
-        };
-
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(&find_cmd)
-            .current_dir(workspace)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await;
-
-        match output {
-            Ok(out) => {
-                let files = String::from_utf8_lossy(&out.stdout);
-                if files.is_empty() {
-                    eprintln!("[file] No files found matching: {query}");
-                } else {
-                    eprintln!("[file] Matches:");
-                    for (i, line) in files.lines().enumerate() {
-                        if !line.is_empty() {
-                            println!("  {}: {}", i + 1, line);
-                        }
-                    }
-                    eprintln!("\n[file] Reference files in your prompt using @<number> or @<path>");
-                }
-            }
-            Err(e) => {
-                eprintln!("[file] Search failed: {e}");
-            }
-        }
-    }
-
-    /// Open external editor for long prompts (Ctrl+G style)
-    #[allow(dead_code)]
-    async fn open_external_editor(&self) -> Option<String> {
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-
-        // Create a temp file
-        let temp_path = std::env::temp_dir().join("nca-prompt-XXXXXX");
-        let _temp_path_str = temp_path.to_string_lossy().to_string();
-
-        // Use mktemp-like approach
-        let temp_file = format!("{}.txt", std::process::id());
+    /// Open the configured external editor (`NCA_EDITOR`, `[ui].editor`, `EDITOR`, `vim`).
+    async fn open_external_editor(&self, seed: Option<&str>) -> Option<String> {
+        let editor_cmd = self.runtime.config().effective_editor_command();
+        let temp_file = format!("nca-prompt-{}.txt", std::process::id());
         let temp_path = std::env::temp_dir().join(&temp_file);
+        std::fs::write(&temp_path, seed.unwrap_or("")).ok()?;
 
-        // Write current buffer if any
-        std::fs::write(&temp_path, "").ok()?;
-
-        // Spawn editor
         let output = Command::new("sh")
             .arg("-c")
-            .arg(format!("{} '{}'", editor, temp_path.display()))
+            .arg(format!("{} '{}'", editor_cmd, temp_path.display()))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -465,6 +407,65 @@ impl Repl {
                 None
             }
         }
+    }
+
+    async fn apply_provider_in_session(
+        &mut self,
+        p: ProviderKind,
+        out: ReplOutput<'_>,
+    ) -> anyhow::Result<()> {
+        let mut cfg = self.runtime.config().clone();
+        cfg.set_default_provider(p);
+        match self.runtime.apply_nca_config(cfg) {
+            Ok(()) => {
+                if let ReplOutput::Tui(st) = &out
+                    && let Ok(mut g) = st.lock()
+                {
+                    g.model = self.runtime.model().to_string();
+                }
+                match self
+                    .runtime
+                    .config()
+                    .save_workspace_file(self.runtime.workspace_root())
+                {
+                    Ok(()) => out.println(&format!(
+                        "[provider] {} — model {} — saved .nca/config.local.toml",
+                        p.display_name(),
+                        self.runtime.model()
+                    )),
+                    Err(e) => out.eprintln(&format!(
+                        "[provider] applied but workspace save failed: {e}"
+                    )),
+                }
+            }
+            Err(e) => out.eprintln(&format!("[provider] {e}")),
+        }
+        Ok(())
+    }
+
+    async fn save_provider_api_key(
+        &mut self,
+        p: ProviderKind,
+        key: &str,
+        out: ReplOutput<'_>,
+    ) -> anyhow::Result<()> {
+        let mut cfg = self.runtime.config().clone();
+        cfg.set_provider_api_key(p, key);
+        match self.runtime.apply_nca_config(cfg) {
+            Ok(()) => {
+                if let Err(e) = self
+                    .runtime
+                    .config()
+                    .save_workspace_file(self.runtime.workspace_root())
+                {
+                    out.eprintln(&format!("[apikey] applied but workspace save failed: {e}"));
+                } else {
+                    out.println(&format!("[apikey] saved for {}", p.display_name()));
+                }
+            }
+            Err(e) => out.eprintln(&format!("[apikey] {e}")),
+        }
+        Ok(())
     }
 
     fn build_editor(&self) -> anyhow::Result<Reedline> {
@@ -509,66 +510,96 @@ impl Repl {
                 out.println("[stop] cancelling current turn…");
             }
             "/help" => {
-                out.print(
-                    "nca Interactive Mode - Claude Code inspired shortcuts:\n\n\
-                     INPUT MODES:\n\
-                       ! <cmd>     Run shell command directly (output feeds back to context)\n\
-                       @ <query>   Search and reference files\n\
-                       / <cmd>     Slash commands\n\
-                       \\          Multiline input (end line with \\ to continue)\n\n\
-                     SLASH COMMANDS:\n\
-                       /help                       Show this help\n\
-                       /status                     Show current session status\n\
-                       /agent [profile]           Show or switch agent profile\n\
-                       /plan <task>               Run a planning-oriented turn\n\
-                       /review <task>             Review code or changes\n\
-                       /fix <task>                Run a bug-fix oriented turn\n\
-                       /test <task>               Ask the agent to validate/test\n\
-                       /clear                     Clear the screen\n\
-                       /compact                   Save a compact session summary\n\
-                       /undo                      Undo last agent response\n\
-                       /redo                      Redo undone response\n\
-                       /diff                      Show recent file changes\n\
-                       /cost                      Show token usage and cost\n\
-                       /stats                     Show session statistics\n\
-                       /auto-answer               Accept suggested answer for pending ask_question\n\
-                       /skills                    List discovered skills\n\
-                       /memory [text]             Show or store workspace memory\n\
-                       /models                    Show available models\n\
-                       /mcp                       List configured MCP servers\n\
-                       /agents                    Show child sessions\n\
-                       /logs                      Print the current event log\n\
-                       /attach                    Show current attach target\n\
-                       /image [paste|clear|<path>] Stage image for next message (TUI; Ctrl+V paste)\n\
-                       /config                    Show effective runtime config\n\
-                       /doctor                    Run MiniMax config checks\n\
-                       /sessions                  List local session IDs\n\
-                       /permissions [mode]        Show or set permission mode\n\
-                       /permission-bypass [on|off|toggle]  Quick bypass toggle (default: toggle)\n\
-                       /stop                      Cancel the current running turn\n\
-                       /exit                      Exit repl\n\n\
-                     KEYBOARD SHORTCUTS:\n\
-                       Tab                         Switch agent profile (@build -> @plan -> @review)\n\
-                       Ctrl+D                     Exit repl\n\
-                       Ctrl+C                     Cancel current request\n\
-                       Ctrl+L                     Clear screen\n\
-                       Ctrl+V                     Paste clipboard image (full-screen TUI)\n\
-                       Ctrl+R                     Search command history\n",
-                );
+                let help_lines = vec![
+                    "nca Interactive Mode".into(),
+                    String::new(),
+                    "INPUT MODES:".into(),
+                    "  ! <cmd>     Run shell command (output feeds into context)".into(),
+                    "  @path       Inline file mentions".into(),
+                    "  / <cmd>     Slash commands".into(),
+                    "  \\           Multiline input (end line with \\ to continue)".into(),
+                    String::new(),
+                    "SLASH COMMANDS:".into(),
+                    "  /help              Show this help".into(),
+                    "  /status            Session status".into(),
+                    "  /agent [profile]   Show or switch agent profile".into(),
+                    "  /plan <task>       Planning-oriented turn".into(),
+                    "  /review <task>     Code review turn".into(),
+                    "  /fix <task>        Bug-fix turn".into(),
+                    "  /test <task>       Validation turn".into(),
+                    "  /clear             Clear the screen".into(),
+                    "  /compact           Compact session summary".into(),
+                    "  /new               Start a new session".into(),
+                    "  /export            Export session to markdown".into(),
+                    "  /thinking          Toggle thinking/reasoning visibility".into(),
+                    "  /skills            List discovered skills".into(),
+                    "  /memory [text]     Show or store memory notes".into(),
+                    "  /models            Browse and select models".into(),
+                    "  /connect           Connect LLM provider".into(),
+                    "  /provider [name]   Default provider".into(),
+                    "  /apikey <p> <key>  Store provider API key".into(),
+                    "  /model [name]      Set active model".into(),
+                    "  /editor [seed]     Open external editor".into(),
+                    "  /set-editor <cmd>  Persist editor command".into(),
+                    "  /mcp               List MCP servers".into(),
+                    "  /sessions          List/switch sessions".into(),
+                    "  /permissions [m]   Show or set permission mode".into(),
+                    "  /config            Show runtime config".into(),
+                    "  /doctor            Run config checks".into(),
+                    "  /diff              Show recent file changes".into(),
+                    "  /cost              Show token usage".into(),
+                    "  /stats             Session statistics".into(),
+                    "  /exit              Exit repl".into(),
+                    String::new(),
+                    "KEYBOARD SHORTCUTS:".into(),
+                    "  Tab          Cycle agent profile".into(),
+                    "  Ctrl+P       Command palette".into(),
+                    "  Ctrl+X M     Switch model".into(),
+                    "  Ctrl+X E     Open editor".into(),
+                    "  Ctrl+X L     Switch session".into(),
+                    "  Ctrl+X N     New session".into(),
+                    "  Ctrl+X C     Compact".into(),
+                    "  Ctrl+X S     View status".into(),
+                    "  Ctrl+X A     Agent picker".into(),
+                    "  Ctrl+X H     Help".into(),
+                    "  Ctrl+X Q     Exit".into(),
+                    "  Ctrl+C       Cancel request".into(),
+                    "  Ctrl+L       Clear screen".into(),
+                    "  Ctrl+V       Paste image (TUI)".into(),
+                    "  F2           Cycle recent models".into(),
+                ];
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("help", help_lines);
+                    }
+                } else {
+                    for l in &help_lines {
+                        out.println(l);
+                    }
+                }
             }
             "/status" => {
                 let snapshot = self.runtime.snapshot();
-                out.println(&format!(
-                    "session={} model={} agent={} permission_mode={:?} children={} memory={}",
-                    snapshot.id,
-                    self.runtime.model(),
-                    self.agent_profile.label(),
-                    self.runtime.permission_mode(),
-                    snapshot.child_session_ids.len(),
-                    self.runtime.memory_store_path().display()
-                ));
-                if let Some(summary) = snapshot.session_summary {
-                    out.println(&format!("summary: {}", summary.replace('\n', " ")));
+                let mut lines = vec![
+                    format!("Session:     {}", snapshot.id),
+                    format!("Model:       {}", self.runtime.model()),
+                    format!("Agent:       @{}", self.agent_profile.label()),
+                    format!("Permission:  {:?}", self.runtime.permission_mode()),
+                    format!("Children:    {}", snapshot.child_session_ids.len()),
+                    format!("Memory:      {}", self.runtime.memory_store_path().display()),
+                ];
+                if let Some(summary) = &snapshot.session_summary {
+                    lines.push(String::new());
+                    lines.push(format!("Summary: {}", summary.replace('\n', " ")));
+                }
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("status", lines);
+                    }
+                } else {
+                    for l in &lines {
+                        out.println(l);
+                    }
                 }
             }
             "/agent" => {
@@ -586,14 +617,14 @@ impl Repl {
                         } else {
                             self.runtime.set_permission_mode(PermissionMode::Default);
                         }
-                        if let ReplOutput::Tui(st) = &out {
-                            if let Ok(mut g) = st.lock() {
-                                g.set_agent_profile(&self.current_agent_label);
-                                g.set_permission_mode(&format!(
-                                    "{:?}",
-                                    self.runtime.permission_mode()
-                                ));
-                            }
+                        if let ReplOutput::Tui(st) = &out
+                            && let Ok(mut g) = st.lock()
+                        {
+                            g.set_agent_profile(&self.current_agent_label);
+                            g.set_permission_mode(&format!(
+                                "{:?}",
+                                self.runtime.permission_mode()
+                            ));
                         }
                         out.println(&format!("Switched to @{} mode", profile.label()));
                     } else {
@@ -606,6 +637,14 @@ impl Repl {
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         ));
+                    }
+                } else if let ReplOutput::Tui(st) = &out {
+                    let current_idx = AgentProfile::ALL
+                        .iter()
+                        .position(|p| *p == self.agent_profile)
+                        .unwrap_or(0);
+                    if let Ok(mut g) = st.lock() {
+                        g.open_agent_picker(current_idx);
                     }
                 } else {
                     out.println(&format!("Current agent: @{}", self.agent_profile.label()));
@@ -651,15 +690,49 @@ impl Repl {
             "/model" => {
                 if let Some(model) = parts.next() {
                     let resolved = self.runtime.config().model.resolve_alias(model);
-                    self.runtime.set_model(resolved.clone());
-                    if let ReplOutput::Tui(st) = out {
-                        if let Ok(mut g) = st.lock() {
-                            g.model = resolved.clone();
+                    let mut cfg = self.runtime.config().clone();
+                    cfg.apply_model_override(&resolved);
+                    cfg.model.track_recent_model(&resolved);
+                    match self.runtime.apply_nca_config(cfg) {
+                        Ok(()) => {
+                            if let Err(e) = self
+                                .runtime
+                                .config()
+                                .save_workspace_file(self.runtime.workspace_root())
+                            {
+                                out.eprintln(&format!(
+                                    "[model] session updated; workspace save failed: {e}"
+                                ));
+                            } else {
+                                out.println(&format!(
+                                    "model set to {} (saved .nca/config.local.toml)",
+                                    self.runtime.model()
+                                ));
+                            }
+                            if let ReplOutput::Tui(st) = out
+                                && let Ok(mut g) = st.lock()
+                            {
+                                g.model = self.runtime.model().to_string();
+                            }
                         }
+                        Err(e) => out.eprintln(&format!("[model] {e}")),
                     }
-                    out.println(&format!("model set to {resolved}"));
+                } else if let ReplOutput::Tui(st) = &out {
+                    let provider_models = nca_runtime::model_limits_api::fetch_provider_model_ids(self.runtime.config()).await;
+                    let entries = build_model_picker_entries(self.runtime.config(), &provider_models);
+                    if let Ok(mut g) = st.lock() {
+                        g.open_model_picker(entries);
+                    }
                 } else {
-                    out.println(&format!("model: {}", self.runtime.model()));
+                    out.println(&format!("active model: {}", self.runtime.model()));
+                    for p in ProviderKind::ALL {
+                        out.println(&format!(
+                            "  {} → {}",
+                            p.display_name(),
+                            self.runtime.config().provider.model_for(p)
+                        ));
+                    }
+                    out.println("usage: /model <name>");
                 }
             }
             "/clear" => {
@@ -700,36 +773,43 @@ impl Repl {
             }
             "/stats" => {
                 let snapshot = self.runtime.snapshot();
-                out.println(&format!("session_id: {}", snapshot.id));
-                out.println(&format!("model: {}", self.runtime.model()));
-                out.println(&format!("agent: @{}", self.agent_profile.label()));
-                out.println(&format!(
-                    "permission_mode: {:?}",
-                    self.runtime.permission_mode()
-                ));
-                out.println(&format!(
-                    "child_sessions: {}",
-                    snapshot.child_session_ids.len()
-                ));
-                out.println(&format!(
-                    "memory_path: {}",
-                    self.runtime.memory_store_path().display()
-                ));
+                let lines = vec![
+                    format!("Session:     {}", snapshot.id),
+                    format!("Model:       {}", self.runtime.model()),
+                    format!("Agent:       @{}", self.agent_profile.label()),
+                    format!("Permission:  {:?}", self.runtime.permission_mode()),
+                    format!("Children:    {}", snapshot.child_session_ids.len()),
+                    format!("Memory:      {}", self.runtime.memory_store_path().display()),
+                ];
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("stats", lines);
+                    }
+                } else {
+                    for l in &lines {
+                        out.println(l);
+                    }
+                }
             }
             "/permissions" => {
                 if let Some(mode) = parts.next() {
                     if let Some(parsed_mode) = parse_permission_mode(mode) {
                         self.runtime.set_permission_mode(parsed_mode);
-                        if let ReplOutput::Tui(st) = out {
-                            if let Ok(mut g) = st.lock() {
-                                g.set_permission_mode(&format!("{parsed_mode:?}"));
-                            }
+                        if let ReplOutput::Tui(st) = out
+                            && let Ok(mut g) = st.lock()
+                        {
+                            g.set_permission_mode(&format!("{parsed_mode:?}"));
                         }
                         out.println(&format!("permission mode set to {parsed_mode:?}"));
                     } else {
                         out.println(
                             "invalid mode; expected one of: default, plan, accept-edits, dont-ask, bypass-permissions",
                         );
+                    }
+                } else if let ReplOutput::Tui(st) = &out {
+                    let current_idx = permission_mode_index(self.runtime.permission_mode());
+                    if let Ok(mut g) = st.lock() {
+                        g.open_permission_picker(current_idx);
                     }
                 } else {
                     out.println(&format!(
@@ -758,10 +838,10 @@ impl Repl {
                     }
                 };
                 self.runtime.set_permission_mode(target);
-                if let ReplOutput::Tui(st) = out {
-                    if let Ok(mut g) = st.lock() {
-                        g.set_permission_mode(&format!("{target:?}"));
-                    }
+                if let ReplOutput::Tui(st) = out
+                    && let Ok(mut g) = st.lock()
+                {
+                    g.set_permission_mode(&format!("{target:?}"));
                 }
                 out.println(&format!("permission mode set to {target:?}"));
             }
@@ -772,10 +852,24 @@ impl Repl {
                 )
                 .map_err(anyhow::Error::msg)?;
                 if skills.is_empty() {
-                    out.println("no skills discovered");
+                    let lines = vec!["No skills discovered.".into()];
+                    if let ReplOutput::Tui(st) = &out {
+                        if let Ok(mut g) = st.lock() {
+                            g.open_info_modal("skills", lines);
+                        }
+                    } else {
+                        out.println("no skills discovered");
+                    }
                 } else {
-                    for skill in skills {
-                        out.println(&skill.summary_line());
+                    let lines: Vec<String> = skills.iter().map(|s| s.summary_line()).collect();
+                    if let ReplOutput::Tui(st) = &out {
+                        if let Ok(mut g) = st.lock() {
+                            g.open_info_modal("skills", lines);
+                        }
+                    } else {
+                        for l in &lines {
+                            out.println(l);
+                        }
                     }
                 }
             }
@@ -784,15 +878,32 @@ impl Repl {
                     let store = MemoryStore::new(self.runtime.memory_store_path());
                     let mem = store.load().await.map_err(anyhow::Error::msg)?;
                     if mem.notes.is_empty() {
-                        out.println("no memory notes stored");
+                        let lines = vec!["No memory notes stored.".into()];
+                        if let ReplOutput::Tui(st) = &out {
+                            if let Ok(mut g) = st.lock() {
+                                g.open_info_modal("memory", lines);
+                            }
+                        } else {
+                            out.println("no memory notes stored");
+                        }
                     } else {
-                        for note in mem.notes.iter().rev().take(5) {
-                            out.println(&format!(
-                                "{} {} {}",
-                                note.id,
-                                note.kind,
-                                note.content.replace('\n', " ")
-                            ));
+                        let lines: Vec<String> = mem
+                            .notes
+                            .iter()
+                            .rev()
+                            .take(20)
+                            .map(|note| {
+                                format!("{} {} {}", note.id, note.kind, note.content.replace('\n', " "))
+                            })
+                            .collect();
+                        if let ReplOutput::Tui(st) = &out {
+                            if let Ok(mut g) = st.lock() {
+                                g.open_info_modal("memory", lines);
+                            }
+                        } else {
+                            for l in lines.iter().take(5) {
+                                out.println(l);
+                            }
                         }
                     }
                 } else {
@@ -814,60 +925,94 @@ impl Repl {
                 out.println(&format!("saved session summary:\n{}", summary));
             }
             "/models" => {
-                let provider = self.runtime.config().provider.default;
-                out.println(&format!(
-                    "default_provider={} default_model={} thinking={} budget={}",
-                    provider.display_name(),
-                    self.runtime.config().model.default_model,
-                    self.runtime.config().model.enable_thinking,
-                    self.runtime.config().model.thinking_budget
-                ));
-                for provider in nca_common::config::ProviderKind::ALL {
+                if let ReplOutput::Tui(st) = &out {
+                    let provider_models = nca_runtime::model_limits_api::fetch_provider_model_ids(self.runtime.config()).await;
+                    let entries = build_model_picker_entries(self.runtime.config(), &provider_models);
+                    if let Ok(mut g) = st.lock() {
+                        g.open_model_picker(entries);
+                    }
+                } else {
+                    let provider = self.runtime.config().provider.default;
                     out.println(&format!(
-                        "  {} -> {} ({})",
+                        "default_provider={} default_model={} thinking={} budget={}",
                         provider.display_name(),
-                        self.runtime.config().provider.model_for(provider),
-                        self.runtime.config().provider.base_url_for(provider)
+                        self.runtime.config().model.default_model,
+                        self.runtime.config().model.enable_thinking,
+                        self.runtime.config().model.thinking_budget
                     ));
-                }
-                for (alias, target) in &self.runtime.config().model.aliases {
-                    out.println(&format!("  {alias} -> {target}"));
+                    for provider in nca_common::config::ProviderKind::ALL {
+                        out.println(&format!(
+                            "  {} -> {} ({})",
+                            provider.display_name(),
+                            self.runtime.config().provider.model_for(provider),
+                            self.runtime.config().provider.base_url_for(provider)
+                        ));
+                    }
+                    for (alias, target) in &self.runtime.config().model.aliases {
+                        out.println(&format!("  {alias} -> {target}"));
+                    }
                 }
             }
             "/mcp" => {
-                if self.runtime.config().mcp.servers.is_empty() {
-                    out.println("no MCP servers configured");
+                let lines: Vec<String> = if self.runtime.config().mcp.servers.is_empty() {
+                    vec!["No MCP servers configured.".into()]
                 } else {
-                    for server in self
-                        .runtime
+                    self.runtime
                         .config()
                         .mcp
                         .servers
                         .iter()
                         .filter(|server| server.enabled)
-                    {
-                        out.println(&format!(
-                            "{} command={} {}",
-                            server.name,
-                            server.command,
-                            server.args.join(" ")
-                        ));
+                        .map(|server| {
+                            format!(
+                                "{} command={} {}",
+                                server.name,
+                                server.command,
+                                server.args.join(" ")
+                            )
+                        })
+                        .collect()
+                };
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("mcp", lines);
+                    }
+                } else {
+                    for l in &lines {
+                        out.println(l);
                     }
                 }
             }
             "/agents" => {
                 let snapshot = self.runtime.snapshot();
-                if snapshot.child_session_ids.is_empty() {
-                    out.println("no child sessions yet");
+                let lines: Vec<String> = if snapshot.child_session_ids.is_empty() {
+                    vec!["No child sessions yet.".into()]
                 } else {
-                    for child in snapshot.child_session_ids {
-                        out.println(&child);
+                    snapshot.child_session_ids.clone()
+                };
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("agents", lines);
+                    }
+                } else {
+                    for l in &lines {
+                        out.println(l);
                     }
                 }
             }
             "/logs" => {
                 match tokio::fs::read_to_string(self.runtime.event_log_path()).await {
-                    Ok(data) => out.print(&data),
+                    Ok(data) => {
+                        if let ReplOutput::Tui(st) = &out {
+                            let lines: Vec<String> = data.lines().rev().take(100).map(String::from).collect();
+                            let lines: Vec<String> = lines.into_iter().rev().collect();
+                            if let Ok(mut g) = st.lock() {
+                                g.open_info_modal("logs (last 100)", lines);
+                            }
+                        } else {
+                            out.print(&data);
+                        }
+                    }
                     Err(err) => {
                         out.eprintln(&format!("failed to read log: {err}"))
                     }
@@ -875,15 +1020,26 @@ impl Repl {
             }
             "/attach" => {
                 let snapshot = self.runtime.snapshot();
-                out.println(&format!(
-                    "session={} socket={}",
-                    snapshot.id,
-                    snapshot
-                        .socket_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "<none>".into())
-                ));
+                let lines = vec![
+                    format!("Session:  {}", snapshot.id),
+                    format!(
+                        "Socket:   {}",
+                        snapshot
+                            .socket_path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<none>".into())
+                    ),
+                ];
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("attach", lines);
+                    }
+                } else {
+                    for l in &lines {
+                        out.println(l);
+                    }
+                }
             }
             "/image" => {
                 let st = match &out {
@@ -940,22 +1096,200 @@ impl Repl {
             }
             "/config" => {
                 let config = self.runtime.config();
-                out.println(&format!(
-                    "provider={:?} model={} permission_mode={:?} memory={}",
-                    config.provider.default,
-                    self.runtime.model(),
-                    self.runtime.permission_mode(),
-                    self.runtime.memory_store_path().display()
-                ));
+                let lines = vec![
+                    format!("Provider:    {}", config.provider.default.display_name()),
+                    format!("Model:       {}", self.runtime.model()),
+                    format!("Permission:  {:?}", self.runtime.permission_mode()),
+                    format!("Memory:      {}", self.runtime.memory_store_path().display()),
+                    format!("Editor:      {}", config.effective_editor_command()),
+                    format!("Thinking:    {} (budget: {})", config.model.enable_thinking, config.model.thinking_budget),
+                    format!("Max tokens:  {}", config.model.max_tokens),
+                    String::new(),
+                    "Provider endpoints:".into(),
+                    format!("  MiniMax:     {}", config.provider.base_url_for(ProviderKind::MiniMax)),
+                    format!("  OpenAI:      {}", config.provider.base_url_for(ProviderKind::OpenAi)),
+                    format!("  Anthropic:   {}", config.provider.base_url_for(ProviderKind::Anthropic)),
+                    format!("  OpenRouter:  {}", config.provider.base_url_for(ProviderKind::OpenRouter)),
+                ];
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("config", lines);
+                    }
+                } else {
+                    for l in &lines {
+                        out.println(l);
+                    }
+                }
+            }
+            "/connect" => {
+                if let ReplOutput::Tui(st) = out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_connect_modal();
+                    }
+                    out.println(
+                        "[connect] Choose a provider (↑↓ · Enter · type to search · Esc). Add key with /apikey if needed.",
+                    );
+                } else {
+                    out.println("Connect an LLM provider (non-TUI):");
+                    out.println("  /provider <minimax|openai|anthropic|openrouter>");
+                    out.println("  /apikey <provider> <secret>   — save API key to .nca/config.local.toml");
+                    out.println("  /model <name>                 — set model after switching provider");
+                    out.println(&format!(
+                        "  current: {} → {}",
+                        self.runtime.config().provider.default.display_name(),
+                        self.runtime.model()
+                    ));
+                }
+            }
+            "/settings" => {
+                let lines = vec![
+                    "Workspace settings (.nca/config.local.toml):".into(),
+                    String::new(),
+                    format!("  Provider:    {}", self.runtime.config().provider.default.display_name()),
+                    format!("  Model:       {}", self.runtime.model()),
+                    format!("  Editor:      {}", self.runtime.config().effective_editor_command()),
+                    format!("  Permission:  {:?}", self.runtime.permission_mode()),
+                    String::new(),
+                    "Commands:".into(),
+                    "  /connect           OpenCode-style provider picker".into(),
+                    "  /models            Browse and select models".into(),
+                    "  /provider [name]   Default LLM provider".into(),
+                    "  /apikey <p> <key>  Store API key for a provider".into(),
+                    "  /model [name]      Model for the active provider".into(),
+                    "  /editor [seed]     Open external editor".into(),
+                    "  /set-editor <cmd>  Persist editor command".into(),
+                ];
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("settings", lines);
+                    }
+                } else {
+                    for l in &lines {
+                        out.println(l);
+                    }
+                }
+            }
+            "/provider" => {
+                let rest = rest.trim();
+                if rest.is_empty() {
+                    if let ReplOutput::Tui(st) = out {
+                        if let Ok(mut g) = st.lock() {
+                            g.open_provider_picker(self.runtime.config().provider.default, false);
+                        }
+                        out.println("[provider] choose with ↑↓ + Enter, Esc to cancel");
+                    } else {
+                        out.println(&format!(
+                            "current default provider: {} (model {})",
+                            self.runtime.config().provider.default.display_name(),
+                            self.runtime.model()
+                        ));
+                        out.println("usage: /provider <minimax|openai|anthropic|openrouter>");
+                    }
+                } else if let Some(p) = ProviderKind::from_cli_name(rest)
+                    .or_else(|| ProviderKind::parse_display_name(rest))
+                {
+                    self.apply_provider_in_session(p, out).await?;
+                } else {
+                    out.eprintln("unknown provider; try: minimax, openai, anthropic, openrouter");
+                }
+            }
+            "/apikey" => {
+                let mut toks = rest.split_whitespace();
+                let p_name = toks.next();
+                let key = toks.collect::<Vec<_>>().join(" ");
+                let key = key.trim();
+                if let Some(pn) = p_name {
+                    let p = ProviderKind::from_cli_name(pn)
+                        .or_else(|| ProviderKind::parse_display_name(pn));
+                    if let Some(p) = p {
+                        if key.is_empty() {
+                            if let ReplOutput::Tui(st) = out {
+                                if let Ok(mut g) = st.lock() {
+                                    g.open_api_key_modal(
+                                        p,
+                                        self.runtime.config().provider.api_key_present_for(p),
+                                        false,
+                                    );
+                                }
+                            } else {
+                                out.println("usage: /apikey <provider> <secret>");
+                            }
+                        } else {
+                            self.save_provider_api_key(p, key, out).await?;
+                        }
+                    } else {
+                        out.eprintln("unknown provider; try: minimax, openai, anthropic, openrouter");
+                    }
+                } else if let ReplOutput::Tui(st) = out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_provider_picker(self.runtime.config().provider.default, true);
+                    }
+                    out.println("[apikey] pick provider, then paste key + Enter");
+                } else {
+                    out.println("usage: /apikey <provider> <secret>");
+                }
+            }
+            "/editor" => {
+                let seed = if rest.is_empty() { None } else { Some(rest) };
+                match self.open_external_editor(seed).await {
+                    Some(text) if !text.is_empty() => {
+                        if let ReplOutput::Tui(st) = out {
+                            if let Ok(mut g) = st.lock() {
+                                g.input_buffer = text;
+                                g.cursor_char_idx = g.input_buffer.chars().count();
+                            }
+                            out.println("[editor] loaded into composer — press Enter to send");
+                        } else {
+                            let expanded = match expand_at_file_mentions_default(
+                                &text,
+                                self.runtime.workspace_root(),
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    out.eprintln(&format!("file mention expansion: {e}"));
+                                    text
+                                }
+                            };
+                            match self.runtime.run_turn(&expanded).await {
+                                Ok(o) => println!("{o}"),
+                                Err(e) => eprintln!("error: {e}"),
+                            }
+                        }
+                    }
+                    Some(_) => out.println("[editor] empty buffer — nothing sent"),
+                    None => {}
+                }
+            }
+            "/set-editor" => {
+                let cmd = rest.trim();
+                if cmd.is_empty() {
+                    out.println(&format!(
+                        "usage: /set-editor <command>  (effective: {})",
+                        self.runtime.config().effective_editor_command()
+                    ));
+                } else {
+                    self.runtime.config_mut().ui.editor = Some(cmd.to_string());
+                    match self
+                        .runtime
+                        .config()
+                        .save_workspace_file(self.runtime.workspace_root())
+                    {
+                        Ok(()) => out.println(&format!(
+                            "[set-editor] saved `{cmd}` to .nca/config.local.toml"
+                        )),
+                        Err(e) => out.eprintln(&format!("[set-editor] save failed: {e}")),
+                    }
+                }
             }
             "/doctor" => {
+                let mut lines = Vec::new();
                 for provider in nca_common::config::ProviderKind::ALL {
                     let configured = self
                         .runtime
                         .config()
                         .provider
                         .api_key_present_for(provider);
-                    out.println(&format!(
+                    lines.push(format!(
                         "{}{} API key {} ({})",
                         provider.display_name(),
                         if provider == self.runtime.config().provider.default {
@@ -963,9 +1297,18 @@ impl Repl {
                         } else {
                             ""
                         },
-                        if configured { "configured" } else { "missing" },
+                        if configured { "✓ configured" } else { "✗ missing" },
                         self.runtime.config().provider.api_key_env_for(provider)
                     ));
+                }
+                if let ReplOutput::Tui(st) = &out {
+                    if let Ok(mut g) = st.lock() {
+                        g.open_info_modal("doctor", lines);
+                    }
+                } else {
+                    for l in &lines {
+                        out.println(l);
+                    }
                 }
             }
             "/auto-answer" => {
@@ -994,7 +1337,19 @@ impl Repl {
                 Ok(mut ids) => {
                     ids.sort();
                     if ids.is_empty() {
-                        out.println("no saved sessions");
+                        let lines = vec!["No saved sessions.".into()];
+                        if let ReplOutput::Tui(st) = &out {
+                            if let Ok(mut g) = st.lock() {
+                                g.open_info_modal("sessions", lines);
+                            }
+                        } else {
+                            out.println("no saved sessions");
+                        }
+                    } else if let ReplOutput::Tui(st) = &out {
+                        let current = self.runtime.session_id().to_string();
+                        if let Ok(mut g) = st.lock() {
+                            g.open_session_picker(ids, &current);
+                        }
                     } else {
                         for id in ids {
                             out.println(&id);
@@ -1005,14 +1360,102 @@ impl Repl {
                     out.eprintln(&format!("failed to list sessions: {error}"));
                 }
             },
-            _ => {
-                if command.starts_with('/') {
-                    if self
-                        .try_run_skill(command.trim_start_matches('/'), rest, &out)
-                        .await?
-                    {
+            "/new" => {
+                let summary = self.runtime.compact_summary();
+                self.runtime.set_session_summary(Some(summary.clone()));
+                self.runtime
+                    .append_memory_note("session-summary", Some(summary))
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                self.runtime.save().await.map_err(anyhow::Error::msg)?;
+                self.runtime.new_session().await.map_err(anyhow::Error::msg)?;
+                let new_id = self.runtime.session_id().to_string();
+                if let ReplOutput::Tui(st) = &out
+                    && let Ok(mut g) = st.lock()
+                {
+                    g.blocks.clear();
+                    g.streaming_assistant = None;
+                    g.scroll_lines = 0;
+                    g.transcript_follow_tail = true;
+                    g.session_id = new_id.clone();
+                    g.model = self.runtime.model().to_string();
+                    g.input_tokens = 0;
+                    g.output_tokens = 0;
+                    g.cost_usd = 0.0;
+                    g.started = std::time::Instant::now();
+                }
+                out.println(&format!("new session started: {new_id}"));
+            }
+            "/export" => {
+                let snapshot = self.runtime.snapshot();
+                let events = self.runtime.event_log_path();
+                let md = match tokio::fs::read_to_string(&events).await {
+                    Ok(raw) => {
+                        let mut md_lines = vec![
+                            format!("# Session {}", snapshot.id),
+                            String::new(),
+                        ];
+                        for line in raw.lines() {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+                                && let Some(kind) = val.get("kind").and_then(|v| v.as_str())
+                            {
+                                match kind {
+                                    "MessageReceived" => {
+                                        let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+                                        let content =
+                                            val.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                        md_lines.push(format!("## {role}"));
+                                        md_lines.push(String::new());
+                                        md_lines.push(content.to_string());
+                                        md_lines.push(String::new());
+                                    }
+                                    "ToolCallStarted" => {
+                                        let tool = val.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
+                                        md_lines.push(format!("### tool: {tool}"));
+                                        md_lines.push(String::new());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        md_lines.join("\n")
+                    }
+                    Err(e) => {
+                        out.eprintln(&format!("[export] failed to read event log: {e}"));
                         return Ok(true);
                     }
+                };
+                let export_path = self.runtime.workspace_root().join(format!(".nca/export-{}.md", snapshot.id));
+                if let Some(parent) = export_path.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                match tokio::fs::write(&export_path, &md).await {
+                    Ok(()) => out.println(&format!("exported to {}", export_path.display())),
+                    Err(e) => out.eprintln(&format!("[export] {e}")),
+                }
+            }
+            "/thinking" => {
+                let mut cfg = self.runtime.config().clone();
+                cfg.model.enable_thinking = !cfg.model.enable_thinking;
+                let new_state = cfg.model.enable_thinking;
+                match self.runtime.apply_nca_config(cfg) {
+                    Ok(()) => {
+                        if let Err(e) = self.runtime.config().save_workspace_file(self.runtime.workspace_root()) {
+                            out.eprintln(&format!("[thinking] toggled but save failed: {e}"));
+                        } else {
+                            out.println(&format!("thinking {} (budget: {})", if new_state { "enabled" } else { "disabled" }, self.runtime.config().model.thinking_budget));
+                        }
+                    }
+                    Err(e) => out.eprintln(&format!("[thinking] {e}")),
+                }
+            }
+            _ => {
+                if command.starts_with('/')
+                    && self
+                        .try_run_skill(command.trim_start_matches('/'), rest, &out)
+                        .await?
+                {
+                    return Ok(true);
                 }
                 out.eprintln(&format!("unknown command: {command}"));
             }
@@ -1032,6 +1475,13 @@ impl Repl {
             return Ok(());
         }
         let prompt = format!("{prefix}{}", task.trim());
+        let prompt = match expand_at_file_mentions_default(&prompt, self.runtime.workspace_root()) {
+            Ok(s) => s,
+            Err(e) => {
+                out.eprintln(&format!("file mentions: {e}"));
+                return Ok(());
+            }
+        };
         match self.runtime.run_turn(&prompt).await {
             Ok(output) => {
                 if matches!(out, ReplOutput::Stdio) {
@@ -1069,6 +1519,13 @@ impl Repl {
         }
 
         let prompt = skill.prompt_for_task(task);
+        let prompt = match expand_at_file_mentions_default(&prompt, self.runtime.workspace_root()) {
+            Ok(s) => s,
+            Err(e) => {
+                out.eprintln(&format!("file mentions: {e}"));
+                return Ok(true);
+            }
+        };
         match self.runtime.run_turn(&prompt).await {
             Ok(output) => {
                 if matches!(out, ReplOutput::Stdio) {
@@ -1100,10 +1557,10 @@ impl Repl {
 
         // Populate the git branch name immediately so it appears on first render.
         let workspace = self.runtime.workspace_root();
-        if let Some(branch) = git_current_branch(workspace) {
-            if let Ok(mut g) = tui_state.lock() {
-                g.set_current_branch(&branch);
-            }
+        if let Some(branch) = git_current_branch(workspace)
+            && let Ok(mut g) = tui_state.lock()
+        {
+            g.set_current_branch(&branch);
         }
 
         let rx = self
@@ -1158,13 +1615,13 @@ impl Repl {
         let approval_state = tui_state.clone();
         tokio::spawn(async move {
             while let Some((call_id, approved)) = approval_rx.recv().await {
-                if !dispatch_tool_approval(&approval_dispatch, &call_id, approved) {
-                    if let Ok(mut g) = approval_state.lock() {
-                        g.clear_active_approval_if_matches(&call_id);
-                        g.push_error(
-                            "approval was no longer pending; cleared stale approval state".into(),
-                        );
-                    }
+                if !dispatch_tool_approval(&approval_dispatch, &call_id, approved)
+                    && let Ok(mut g) = approval_state.lock()
+                {
+                    g.clear_active_approval_if_matches(&call_id);
+                    g.push_error(
+                        "approval was no longer pending; cleared stale approval state".into(),
+                    );
                 }
             }
         });
@@ -1248,35 +1705,297 @@ impl Repl {
                         g.push_error(format!("Failed to create branch: {}", name));
                     }
                 }
+                TuiCmd::ApplyDefaultProvider(p) => {
+                    self.apply_provider_in_session(p, ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::PromptApiKey(p, connect_after_save) => {
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.open_api_key_modal(
+                            p,
+                            self.runtime.config().provider.api_key_present_for(p),
+                            connect_after_save,
+                        );
+                    }
+                }
+                TuiCmd::ApplyModel(model_name) => {
+                    let resolved = self.runtime.config().model.resolve_alias(&model_name);
+                    let mut cfg = self.runtime.config().clone();
+                    cfg.apply_model_override(&resolved);
+                    cfg.model.track_recent_model(&resolved);
+                    match self.runtime.apply_nca_config(cfg) {
+                        Ok(()) => {
+                            if let Err(e) = self
+                                .runtime
+                                .config()
+                                .save_workspace_file(self.runtime.workspace_root())
+                            {
+                                if let Ok(mut g) = tui_state.lock() {
+                                    g.push_error(format!("[model] workspace save failed: {e}"));
+                                }
+                            } else if let Ok(mut g) = tui_state.lock() {
+                                g.model = self.runtime.model().to_string();
+                                g.blocks.push(DisplayBlock::System(format!(
+                                    "[model] switched to {} (saved)",
+                                    self.runtime.model()
+                                )));
+                            }
+                        }
+                        Err(e) => {
+                            if let Ok(mut g) = tui_state.lock() {
+                                g.push_error(format!("[model] {e}"));
+                            }
+                        }
+                    }
+                }
+                TuiCmd::ApplyModelProvider(p) => {
+                    self.apply_provider_in_session(p, ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::ApplyPermission(idx) => {
+                    let mode = permission_mode_from_index(idx);
+                    self.runtime.set_permission_mode(mode);
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.set_permission_mode(&format!("{mode:?}"));
+                        g.blocks.push(DisplayBlock::System(format!(
+                            "permission mode set to {mode:?}"
+                        )));
+                    }
+                }
+                TuiCmd::SwitchAgent(idx) => {
+                    if let Some(&profile) = AgentProfile::ALL.get(idx) {
+                        self.agent_profile = profile;
+                        self.current_agent_label = format!("@{}", profile.label());
+                        if profile == AgentProfile::Plan {
+                            self.runtime.set_permission_mode(PermissionMode::Plan);
+                        } else {
+                            self.runtime.set_permission_mode(PermissionMode::Default);
+                        }
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.set_agent_profile(&self.current_agent_label);
+                            g.set_permission_mode(&format!("{:?}", self.runtime.permission_mode()));
+                            g.blocks.push(DisplayBlock::System(format!(
+                                "switched to @{}",
+                                profile.label()
+                            )));
+                        }
+                    }
+                }
+                TuiCmd::OpenEditor => {
+                    self.handle_command("/editor", ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::NewSession => {
+                    self.handle_command("/new", ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::RunCompact => {
+                    self.handle_command("/compact", ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::OpenModelPicker => {
+                    self.handle_command("/models", ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::OpenStatus => {
+                    self.handle_command("/status", ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::OpenHelp => {
+                    self.handle_command("/help", ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::OpenAgentPicker => {
+                    let current_idx = AgentProfile::ALL
+                        .iter()
+                        .position(|p| *p == self.agent_profile)
+                        .unwrap_or(0);
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.open_agent_picker(current_idx);
+                    }
+                }
+                TuiCmd::OpenPermissionPicker => {
+                    let current_idx = permission_mode_index(self.runtime.permission_mode());
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.open_permission_picker(current_idx);
+                    }
+                }
+                TuiCmd::OpenSessions => {
+                    self.handle_command("/sessions", ReplOutput::Tui(&tui_state))
+                        .await?;
+                }
+                TuiCmd::ResumeSession(session_id) => {
+                    let current = self.runtime.session_id().to_string();
+                    if session_id == current {
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.blocks
+                                .push(DisplayBlock::System("Already on this session.".into()));
+                        }
+                    } else {
+                        // Save current, then attempt resume
+                        let _ = self.runtime.save().await;
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.blocks.push(DisplayBlock::System(format!(
+                                "Resuming session {} is not yet fully supported in-process. Please restart nca with: nca resume {session_id}",
+                                session_id
+                            )));
+                        }
+                    }
+                }
+                TuiCmd::CycleModel(forward) => {
+                    let recent = &self.runtime.config().model.recent_models;
+                    if recent.len() >= 2 {
+                        let current = self.runtime.model().to_string();
+                        let pos = recent.iter().position(|m| m == &current).unwrap_or(0);
+                        let next_pos = if forward {
+                            (pos + 1) % recent.len()
+                        } else {
+                            pos.checked_sub(1).unwrap_or(recent.len() - 1)
+                        };
+                        let next_model = recent[next_pos].clone();
+                        let mut cfg = self.runtime.config().clone();
+                        cfg.apply_model_override(&next_model);
+                        if let Ok(()) = self.runtime.apply_nca_config(cfg) {
+                            let _ = self
+                                .runtime
+                                .config()
+                                .save_workspace_file(self.runtime.workspace_root());
+                            if let Ok(mut g) = tui_state.lock() {
+                                g.model = self.runtime.model().to_string();
+                                g.blocks.push(DisplayBlock::System(format!(
+                                    "[F2] switched to {}",
+                                    self.runtime.model()
+                                )));
+                            }
+                        }
+                    } else if let Ok(mut g) = tui_state.lock() {
+                        g.blocks.push(DisplayBlock::System(
+                            "[F2] no recent models to cycle (need 2+ in model.recent_models)"
+                                .into(),
+                        ));
+                    }
+                }
                 TuiCmd::QuestionAnswer(selection) => {
                     let qid = if let Ok(g) = tui_state.lock() {
                         g.active_question.as_ref().map(|q| q.question_id.clone())
                     } else {
                         None
                     };
-                    if let Some(qid) = qid {
-                        if !self.runtime.submit_question_answer(&qid, selection) {
-                            if let Ok(mut g) = tui_state.lock() {
-                                g.push_error(
-                                    "failed to submit answer (expired or already answered)".into(),
-                                );
-                            }
-                        }
+                    if let Some(qid) = qid
+                        && !self.runtime.submit_question_answer(&qid, selection)
+                        && let Ok(mut g) = tui_state.lock()
+                    {
+                        g.push_error(
+                            "failed to submit answer (expired or already answered)".into(),
+                        );
                     }
                 }
                 TuiCmd::Submit(line) => {
                     let line = line.trim().to_string();
+                    let api_key_modal_state = tui_state.lock().ok().and_then(|g| {
+                        g.api_key_modal_open.then_some((
+                            g.api_key_target_provider,
+                            g.api_key_input.clone(),
+                            g.api_key_connect_after_save,
+                        ))
+                    });
+                    if let Some((Some(p), key_input, connect_after_save)) = api_key_modal_state {
+                        let typed = if line.starts_with('/') {
+                            ""
+                        } else {
+                            key_input.trim()
+                        };
+                        let had_existing = self.runtime.config().provider.api_key_present_for(p);
+                        if line.starts_with('/') {
+                            if let Ok(mut g) = tui_state.lock() {
+                                g.close_api_key_modal();
+                            }
+                        } else if typed.is_empty() {
+                            if had_existing {
+                                if let Ok(mut g) = tui_state.lock() {
+                                    g.close_api_key_modal();
+                                    g.blocks.push(DisplayBlock::System(format!(
+                                        "[apikey] keeping existing key for {}",
+                                        p.display_name()
+                                    )));
+                                }
+                                if connect_after_save {
+                                    self.apply_provider_in_session(p, ReplOutput::Tui(&tui_state))
+                                        .await?;
+                                }
+                            } else if let Ok(mut g) = tui_state.lock() {
+                                g.push_error(format!(
+                                    "[apikey] paste a key for {} or Esc to cancel",
+                                    p.display_name()
+                                ));
+                            }
+                            continue;
+                        } else {
+                            self.save_provider_api_key(p, typed, ReplOutput::Tui(&tui_state))
+                                .await?;
+                            if let Ok(mut g) = tui_state.lock() {
+                                g.close_api_key_modal();
+                            }
+                            if connect_after_save {
+                                self.apply_provider_in_session(p, ReplOutput::Tui(&tui_state))
+                                    .await?;
+                            }
+                            continue;
+                        }
+                    }
                     if line.is_empty() {
+                        if let Ok(mut g) = tui_state.lock()
+                            && g.pending_api_key_provider.take().is_some()
+                        {
+                            g.blocks.push(DisplayBlock::System(
+                                "[apikey] entry cancelled (empty line)".into(),
+                            ));
+                        }
                         continue;
+                    }
+                    if let Some(p) = tui_state
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.pending_api_key_provider)
+                    {
+                        if !line.starts_with('/') {
+                            let mut cfg = self.runtime.config().clone();
+                            cfg.set_provider_api_key(p, &line);
+                            match self.runtime.apply_nca_config(cfg) {
+                                Ok(()) => {
+                                    if let Err(e) = self
+                                        .runtime
+                                        .config()
+                                        .save_workspace_file(self.runtime.workspace_root())
+                                    {
+                                        if let Ok(mut g) = tui_state.lock() {
+                                            g.push_error(format!(
+                                                "[apikey] applied but save failed: {e}"
+                                            ));
+                                        }
+                                    } else if let Ok(mut g) = tui_state.lock() {
+                                        g.pending_api_key_provider = None;
+                                        g.blocks.push(DisplayBlock::System(format!(
+                                            "[apikey] saved for {}",
+                                            p.display_name()
+                                        )));
+                                    }
+                                }
+                                Err(e) => {
+                                    if let Ok(mut g) = tui_state.lock() {
+                                        g.push_error(format!("[apikey] {e}"));
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.pending_api_key_provider = None;
+                        }
                     }
                     if line.starts_with('!') {
                         let shell_cmd = line.trim_start_matches('!').trim();
                         self.run_bash_tui(shell_cmd, &tui_state).await;
-                        continue;
-                    }
-                    if line.starts_with('@') {
-                        let q = line.trim_start_matches('@');
-                        self.file_ref_tui(q, &tui_state).await;
                         continue;
                     }
                     if line.starts_with('/') {
@@ -1291,6 +2010,17 @@ impl Repl {
                         }
                         continue;
                     }
+                    let expanded =
+                        match expand_at_file_mentions_default(&line, self.runtime.workspace_root())
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                if let Ok(mut g) = tui_state.lock() {
+                                    g.push_error(format!("file mentions: {e}"));
+                                }
+                                continue;
+                            }
+                        };
                     if let Ok(mut g) = tui_state.lock() {
                         g.set_busy(true);
                     }
@@ -1300,14 +2030,16 @@ impl Repl {
                         Vec::new()
                     };
                     let turn = if attachments.is_empty() {
-                        self.runtime.run_turn(&line).await
+                        self.runtime.run_turn(&expanded).await
                     } else {
-                        self.runtime.run_turn_with_images(&line, attachments).await
+                        self.runtime
+                            .run_turn_with_images(&expanded, attachments)
+                            .await
                     };
-                    if let Err(e) = turn {
-                        if let Ok(mut g) = tui_state.lock() {
-                            g.push_error(e.to_string());
-                        }
+                    if let Err(e) = turn
+                        && let Ok(mut g) = tui_state.lock()
+                    {
+                        g.push_error(e.to_string());
                     }
                     if let Ok(mut g) = tui_state.lock() {
                         g.set_busy(false);
@@ -1343,11 +2075,11 @@ impl Repl {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                if !stdout.is_empty() {
-                    if let Ok(mut g) = st.lock() {
-                        for line in stdout.lines() {
-                            g.blocks.push(DisplayBlock::System(line.to_string()));
-                        }
+                if !stdout.is_empty()
+                    && let Ok(mut g) = st.lock()
+                {
+                    for line in stdout.lines() {
+                        g.blocks.push(DisplayBlock::System(line.to_string()));
                     }
                 }
                 if !stderr.is_empty() {
@@ -1365,59 +2097,32 @@ impl Repl {
             Err(e) => log(st, &format!("[bash] {e}")),
         }
     }
-
-    async fn file_ref_tui(&self, query: &str, st: &Arc<Mutex<TuiSessionState>>) {
-        fn log(st: &Arc<Mutex<TuiSessionState>>, s: &str) {
-            if let Ok(mut g) = st.lock() {
-                g.blocks.push(DisplayBlock::System(s.to_string()));
-            }
-        }
-        let query = query.trim();
-        let workspace = self.runtime.workspace_root();
-        log(st, &format!("[file] search: {query}"));
-        let find_cmd = if query.is_empty() {
-            "find . -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.toml' \\) 2>/dev/null | head -20"
-                .to_string()
-        } else {
-            let escaped = query.replace(
-                |c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_',
-                "\\",
-            );
-            format!(
-                "find . -type f \\( -name '*{escaped}*' -o -path '*{escaped}*' \\) 2>/dev/null | head -20"
-            )
-        };
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(&find_cmd)
-            .current_dir(workspace)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await;
-        match output {
-            Ok(out) => {
-                let files = String::from_utf8_lossy(&out.stdout);
-                if files.trim().is_empty() {
-                    log(st, "[file] no matches");
-                } else {
-                    for (i, line) in files.lines().enumerate() {
-                        if !line.is_empty() {
-                            log(st, &format!("  {}: {}", i + 1, line));
-                        }
-                    }
-                    log(st, "[file] reference with @<path> in your next message");
-                }
-            }
-            Err(e) => log(st, &format!("[file] {e}")),
-        }
-    }
 }
 
 /// Tab completion for REPL commands and skills
 impl Completer for Repl {
-    fn complete(&mut self, line: &str, _pos: usize) -> Vec<Suggestion> {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let mut suggestions = Vec::new();
+
+        if let Some((at_byte, prefix)) = at_token_before_cursor(line, pos) {
+            let files = discover_workspace_files(self.runtime.workspace_root());
+            for path in filter_paths_prefix(&files, &prefix) {
+                suggestions.push(Suggestion {
+                    value: format!("@{path}"),
+                    description: Some("workspace file".to_string()),
+                    extra: None,
+                    span: reedline::Span {
+                        start: at_byte,
+                        end: pos,
+                    },
+                    append_whitespace: false,
+                    style: None,
+                });
+            }
+            if !suggestions.is_empty() {
+                return suggestions;
+            }
+        }
 
         // Complete REPL commands starting with /
         if line.starts_with('/') {
@@ -1457,33 +2162,6 @@ impl Completer for Repl {
             }
         }
 
-        // Complete file references (starting with @)
-        if line.starts_with('@') {
-            let prefix = line.trim_start_matches('@');
-            // Suggest some common file patterns
-            let patterns = [
-                "src/",
-                "lib/",
-                "tests/",
-                "docs/",
-                "Cargo.toml",
-                "package.json",
-                "README.md",
-            ];
-            for pat in patterns {
-                if pat.starts_with(prefix) {
-                    suggestions.push(Suggestion {
-                        value: format!("@{}", pat),
-                        description: Some("File reference".to_string()),
-                        extra: None,
-                        span: reedline::Span { start: 0, end: 0 },
-                        append_whitespace: true,
-                        style: None,
-                    });
-                }
-            }
-        }
-
         // Load skills for completion
         if let Ok(skills) = SkillCatalog::discover(
             self.runtime.workspace_root(),
@@ -1505,6 +2183,92 @@ impl Completer for Repl {
         }
 
         suggestions
+    }
+}
+
+fn build_model_picker_entries(
+    config: &nca_common::config::NcaConfig,
+    provider_models: &[String],
+) -> Vec<ModelPickerEntry> {
+    let mut entries = Vec::new();
+    entries.push(ModelPickerEntry {
+        label: "Providers".into(),
+        detail: String::new(),
+        action: ModelPickerAction::ApplyModel(String::new()),
+        is_header: true,
+    });
+    for p in ProviderKind::ALL {
+        let model = config.provider.model_for(p);
+        let key_status = if config.provider.api_key_present_for(p) {
+            "key ✓"
+        } else {
+            "no key"
+        };
+        let selected = if p == config.provider.default {
+            " [active]"
+        } else {
+            ""
+        };
+        entries.push(ModelPickerEntry {
+            label: format!("{}{}", p.display_name(), selected),
+            detail: format!("{model} ({key_status})"),
+            action: ModelPickerAction::SwitchProvider(p),
+            is_header: false,
+        });
+    }
+
+    if !provider_models.is_empty() {
+        entries.push(ModelPickerEntry {
+            label: format!("{} models", config.provider.default.display_name()),
+            detail: String::new(),
+            action: ModelPickerAction::ApplyModel(String::new()),
+            is_header: true,
+        });
+        for model_id in provider_models {
+            entries.push(ModelPickerEntry {
+                label: model_id.clone(),
+                detail: String::new(),
+                action: ModelPickerAction::ApplyModel(model_id.clone()),
+                is_header: false,
+            });
+        }
+    }
+
+    entries.push(ModelPickerEntry {
+        label: "Aliases".into(),
+        detail: String::new(),
+        action: ModelPickerAction::ApplyModel(String::new()),
+        is_header: true,
+    });
+    for (alias, target) in &config.model.aliases {
+        entries.push(ModelPickerEntry {
+            label: alias.clone(),
+            detail: format!("→ {target}"),
+            action: ModelPickerAction::ApplyModel(alias.clone()),
+            is_header: false,
+        });
+    }
+    entries
+}
+
+fn permission_mode_index(mode: PermissionMode) -> usize {
+    match mode {
+        PermissionMode::Default => 0,
+        PermissionMode::Plan => 1,
+        PermissionMode::AcceptEdits => 2,
+        PermissionMode::DontAsk => 3,
+        PermissionMode::BypassPermissions => 4,
+    }
+}
+
+fn permission_mode_from_index(idx: usize) -> PermissionMode {
+    match idx {
+        0 => PermissionMode::Default,
+        1 => PermissionMode::Plan,
+        2 => PermissionMode::AcceptEdits,
+        3 => PermissionMode::DontAsk,
+        4 => PermissionMode::BypassPermissions,
+        _ => PermissionMode::Default,
     }
 }
 
