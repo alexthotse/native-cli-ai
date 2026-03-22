@@ -15,6 +15,9 @@ pub struct NcaConfig {
     pub memory: MemoryConfig,
     pub hooks: HookConfig,
     pub web: WebConfig,
+    /// CLI/TUI preferences (e.g. external editor).
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 impl Default for NcaConfig {
@@ -29,6 +32,7 @@ impl Default for NcaConfig {
             memory: MemoryConfig::default(),
             hooks: HookConfig::default(),
             web: WebConfig::default(),
+            ui: UiConfig::default(),
         }
     }
 }
@@ -150,6 +154,9 @@ impl NcaConfig {
         if let Some(web) = partial.web {
             self.web.merge(web);
         }
+        if let Some(ui) = partial.ui {
+            self.ui.merge(ui);
+        }
 
         if explicit_model_override {
             self.provider
@@ -252,8 +259,80 @@ impl NcaConfig {
         self.sync_default_model_from_provider();
     }
 
-    fn sync_default_model_from_provider(&mut self) {
+    /// Switch the default LLM provider and keep `default_model` aligned with that provider's model field.
+    pub fn set_default_provider(&mut self, provider: ProviderKind) {
+        self.provider.default = provider;
+        self.sync_default_model_from_provider();
+    }
+
+    /// Set the API key stored in config for a provider (workspace save may persist it).
+    pub fn set_provider_api_key(&mut self, provider: ProviderKind, key: impl Into<String>) {
+        let key = key.into();
+        match provider {
+            ProviderKind::MiniMax => self.provider.minimax.api_key = Some(key),
+            ProviderKind::OpenAi => self.provider.openai.api_key = Some(key),
+            ProviderKind::Anthropic => self.provider.anthropic.api_key = Some(key),
+            ProviderKind::OpenRouter => self.provider.openrouter.api_key = Some(key),
+        }
+    }
+
+    /// Editor command: `NCA_EDITOR`, then `[ui].editor`, then `EDITOR`, then `vim`.
+    pub fn effective_editor_command(&self) -> String {
+        if let Ok(v) = env::var("NCA_EDITOR") {
+            let t = v.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+        if let Some(ref e) = self.ui.editor {
+            let t = e.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+        env::var("EDITOR").unwrap_or_else(|_| "vim".to_string())
+    }
+
+    pub fn sync_default_model_from_provider(&mut self) {
         self.model.default_model = self.provider.active_model().to_string();
+    }
+}
+
+/// User interface preferences persisted in config.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UiConfig {
+    /// Shell command to launch the external editor (e.g. `vim` or `code --wait`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<String>,
+    /// Theme name (future: "default", "tokyonight", etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// Hide hint text in the composer area.
+    #[serde(default)]
+    pub hide_tips: bool,
+    /// Lines per scroll event (default 3).
+    #[serde(default = "default_scroll_speed")]
+    pub scroll_speed: u16,
+}
+
+fn default_scroll_speed() -> u16 {
+    3
+}
+
+impl UiConfig {
+    fn merge(&mut self, partial: PartialUiConfig) {
+        if let Some(editor) = partial.editor {
+            self.editor = Some(editor);
+        }
+        if let Some(theme) = partial.theme {
+            self.theme = Some(theme);
+        }
+        if let Some(hide_tips) = partial.hide_tips {
+            self.hide_tips = hide_tips;
+        }
+        if let Some(scroll_speed) = partial.scroll_speed {
+            self.scroll_speed = scroll_speed;
+        }
     }
 }
 
@@ -520,6 +599,17 @@ impl ProviderKind {
         ProviderKind::OpenRouter,
     ];
 
+    /// Parse user/CLI input (slash commands, TUI pickers).
+    pub fn from_cli_name(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "minimax" | "mini-max" | "minimaxi" => Some(Self::MiniMax),
+            "openai" | "open-ai" | "gpt" => Some(Self::OpenAi),
+            "anthropic" | "claude" => Some(Self::Anthropic),
+            "openrouter" | "open-router" => Some(Self::OpenRouter),
+            _ => None,
+        }
+    }
+
     fn from_env(value: &str) -> Self {
         match value.to_ascii_lowercase().as_str() {
             "openrouter" => Self::OpenRouter,
@@ -536,6 +626,14 @@ impl ProviderKind {
             ProviderKind::Anthropic => "Anthropic",
             ProviderKind::OpenAi => "OpenAI",
         }
+    }
+
+    /// Match [`display_name`](Self::display_name) output (case-insensitive).
+    pub fn parse_display_name(s: &str) -> Option<Self> {
+        let t = s.trim();
+        Self::ALL
+            .into_iter()
+            .find(|k| k.display_name().eq_ignore_ascii_case(t))
     }
 }
 
@@ -742,6 +840,9 @@ pub struct ModelConfig {
     pub thinking_budget: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub aliases: BTreeMap<String, String>,
+    /// Last N used model names for F2 cycling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_models: Vec<String>,
 }
 
 impl Default for ModelConfig {
@@ -752,6 +853,7 @@ impl Default for ModelConfig {
             enable_thinking: false,
             thinking_budget: 5120,
             aliases: default_model_aliases(),
+            recent_models: Vec::new(),
         }
     }
 }
@@ -773,6 +875,9 @@ impl ModelConfig {
         if let Some(aliases) = partial.aliases {
             self.aliases = aliases;
         }
+        if let Some(recent_models) = partial.recent_models {
+            self.recent_models = recent_models;
+        }
     }
 
     pub fn resolve_alias(&self, raw: &str) -> String {
@@ -786,6 +891,13 @@ impl ModelConfig {
             .get(&lowered)
             .cloned()
             .unwrap_or_else(|| trimmed.to_string())
+    }
+
+    /// Push a model name to the front of the recent list, deduplicating and capping at 8.
+    pub fn track_recent_model(&mut self, model: &str) {
+        self.recent_models.retain(|m| m != model);
+        self.recent_models.insert(0, model.to_string());
+        self.recent_models.truncate(8);
     }
 }
 
@@ -839,6 +951,9 @@ pub struct SessionConfig {
     pub checkpoint_interval: u32,
     /// File that stores the last active session ID for auto-resume.
     pub last_session_file: PathBuf,
+    /// Auto-compact when switching away from a session.
+    #[serde(default)]
+    pub auto_compact_on_finish: bool,
 }
 
 impl Default for SessionConfig {
@@ -849,6 +964,7 @@ impl Default for SessionConfig {
             max_tool_calls_per_turn: 200,
             checkpoint_interval: 5,
             last_session_file: PathBuf::from(".nca/.last_session"),
+            auto_compact_on_finish: false,
         }
     }
 }
@@ -987,7 +1103,7 @@ impl Default for WebConfig {
             timeout_secs: 15,
             max_fetch_chars: 25_000,
             default_search_limit: 5,
-            user_agent: "nca/0.1 (+https://github.com/user/native-cli-ai)".into(),
+            user_agent: "nca/0.5 (+https://github.com/user/native-cli-ai)".into(),
         }
     }
 }
@@ -1154,6 +1270,9 @@ impl SessionConfig {
         if let Some(last_session_file) = partial.last_session_file {
             self.last_session_file = last_session_file;
         }
+        if let Some(auto_compact_on_finish) = partial.auto_compact_on_finish {
+            self.auto_compact_on_finish = auto_compact_on_finish;
+        }
     }
 }
 
@@ -1168,6 +1287,15 @@ struct PartialNcaConfig {
     memory: Option<PartialMemoryConfig>,
     hooks: Option<PartialHookConfig>,
     web: Option<PartialWebConfig>,
+    ui: Option<PartialUiConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct PartialUiConfig {
+    editor: Option<String>,
+    theme: Option<String>,
+    hide_tips: Option<bool>,
+    scroll_speed: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1224,6 +1352,7 @@ struct PartialModelConfig {
     enable_thinking: Option<bool>,
     thinking_budget: Option<u32>,
     aliases: Option<BTreeMap<String, String>>,
+    recent_models: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1242,6 +1371,7 @@ struct PartialSessionConfig {
     max_tool_calls_per_turn: Option<u32>,
     checkpoint_interval: Option<u32>,
     last_session_file: Option<PathBuf>,
+    auto_compact_on_finish: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1447,5 +1577,32 @@ mod tests {
         assert_eq!(p1, p2);
         assert!(id1.contains('-'));
         assert!(id1.len() > 16);
+    }
+
+    #[test]
+    fn ui_editor_roundtrips_through_workspace_file() {
+        let _guard = EnvGuard::set(&[("NCA_EDITOR", None), ("EDITOR", None)]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = NcaConfig::default();
+        config.ui.editor = Some("vim".into());
+        config.set_default_provider(ProviderKind::MiniMax);
+        config.save_workspace_file(dir.path()).expect("save");
+
+        let loaded = NcaConfig::load_for_workspace(dir.path()).expect("load");
+        assert_eq!(loaded.ui.editor.as_deref(), Some("vim"));
+        assert_eq!(loaded.effective_editor_command(), "vim");
+    }
+
+    #[test]
+    fn provider_kind_from_cli_name() {
+        assert_eq!(
+            ProviderKind::from_cli_name("MINIMAX"),
+            Some(ProviderKind::MiniMax)
+        );
+        assert_eq!(
+            ProviderKind::from_cli_name("openai"),
+            Some(ProviderKind::OpenAi)
+        );
+        assert_eq!(ProviderKind::from_cli_name("nope"), None);
     }
 }

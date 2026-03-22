@@ -1,8 +1,8 @@
 use nca_common::config::{NcaConfig, PermissionMode};
+use nca_core::provider::ProviderError;
 use nca_common::event::{AgentEvent, EndReason, QuestionSelection};
 use nca_common::session::{OrchestrationContext, SessionSnapshot};
 use nca_core::approval::ApprovalHandler;
-use nca_core::provider::ProviderError;
 use nca_core::tools::spawn_subagent::SpawnRequest;
 use nca_runtime::ipc::IpcHandle;
 use nca_runtime::supervisor::{Supervisor, SupervisorConfig, SupervisorHandle};
@@ -182,6 +182,17 @@ impl SessionRuntime {
         &self.config
     }
 
+    pub fn config_mut(&mut self) -> &mut NcaConfig {
+        &mut self.config
+    }
+
+    /// Replace merged config and rebuild the provider (fails if API key missing, etc.).
+    pub fn apply_nca_config(&mut self, config: NcaConfig) -> Result<(), ProviderError> {
+        self.supervisor.apply_nca_config(config.clone())?;
+        self.config = config;
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> SessionSnapshot {
         self.supervisor.snapshot()
     }
@@ -204,6 +215,14 @@ impl SessionRuntime {
 
     pub fn memory_store_path(&self) -> std::path::PathBuf {
         self.supervisor.memory_store_path()
+    }
+
+    /// Start a fresh session: save the current one, generate a new ID, clear messages.
+    pub async fn new_session(&mut self) -> Result<(), String> {
+        self.supervisor.finish(EndReason::Completed).await;
+        self.supervisor.save().await?;
+        self.supervisor.reset_for_new_session();
+        Ok(())
     }
 }
 

@@ -380,6 +380,186 @@ async fn fetch_openai_context(
     openai_context_from_catalog(value.as_ref(), model)
 }
 
+/// Fetch available model IDs from the active provider's API.
+/// Returns a sorted list of model ID strings. Uses the same cache as context-window lookups.
+pub async fn fetch_provider_model_ids(config: &NcaConfig) -> Vec<String> {
+    if std::env::var("NCA_SKIP_CONTEXT_API").ok().as_deref() == Some("1") {
+        return Vec::new();
+    }
+    let client = match http_client() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    match config.provider.default {
+        ProviderKind::OpenRouter => fetch_openrouter_model_ids(&client, config).await,
+        ProviderKind::Anthropic => fetch_anthropic_model_ids(&client, config).await,
+        ProviderKind::OpenAi => fetch_openai_model_ids(&client, config).await,
+        ProviderKind::MiniMax => vec!["MiniMax-M2.5".into(), "MiniMax-M2.7".into()],
+    }
+}
+
+async fn fetch_openrouter_model_ids(client: &reqwest::Client, config: &NcaConfig) -> Vec<String> {
+    let base = config.provider.openrouter.base_url.trim_end_matches('/');
+    let url = format!("{base}/v1/models");
+    let key = config.provider.openrouter.resolve_api_key();
+    let ttl = catalog_cache_ttl();
+
+    // Check cache first
+    {
+        let guard = openrouter_catalog_cache().lock().ok();
+        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref()) {
+            if entry.url == url && !cache_stale(entry.fetched_at, ttl) {
+                let mut ids: Vec<String> = entry.models.iter().map(|m| m.id.clone()).collect();
+                ids.sort();
+                return ids;
+            }
+        }
+    }
+
+    let mut req = client.get(&url);
+    if let Some(k) = key.as_deref().filter(|s| !s.is_empty()) {
+        req = req.bearer_auth(k);
+    }
+    let resp = match req.send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let body: OpenRouterModelsResponse = match resp.json().await {
+        Ok(b) => b,
+        Err(_) => return Vec::new(),
+    };
+    let models = Arc::new(body.data);
+    let mut ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
+    ids.sort();
+    {
+        if let Ok(mut guard) = openrouter_catalog_cache().lock() {
+            *guard = Some(OpenRouterCatalogEntry {
+                url,
+                fetched_at: Instant::now(),
+                models,
+            });
+        }
+    }
+    ids
+}
+
+async fn fetch_anthropic_model_ids(client: &reqwest::Client, config: &NcaConfig) -> Vec<String> {
+    let key = match config.provider.anthropic.resolve_api_key() {
+        Some(k) => k,
+        None => return Vec::new(),
+    };
+    let base = config.provider.anthropic.base_url.trim_end_matches('/');
+    let ttl = catalog_cache_ttl();
+    let cache_key = format!("anthropic|{}|{:x}", base, api_key_tag(&key));
+
+    {
+        let guard = anthropic_catalog_cache().lock().ok();
+        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref()) {
+            if entry.cache_key == cache_key && !cache_stale(entry.fetched_at, ttl) {
+                let mut ids: Vec<String> = entry.models.iter().map(|m| m.id.clone()).collect();
+                ids.sort();
+                return ids;
+            }
+        }
+    }
+
+    let mut all: Vec<AnthropicModel> = Vec::new();
+    let mut after_id: Option<String> = None;
+    loop {
+        let mut url = format!("{base}/v1/models?limit=100");
+        if let Some(ref id) = after_id {
+            url.push_str("&after_id=");
+            url.push_str(id);
+        }
+        let resp = match client
+            .get(&url)
+            .header("x-api-key", &key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r,
+            _ => break,
+        };
+        let page: AnthropicModelsPage = match resp.json().await {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        if page.data.is_empty() { break; }
+        let cursor = page.data.last().map(|m| m.id.clone());
+        all.extend(page.data);
+        if !page.has_more { break; }
+        after_id = cursor;
+    }
+
+    let models = Arc::new(all);
+    let mut ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
+    ids.sort();
+    {
+        if let Ok(mut guard) = anthropic_catalog_cache().lock() {
+            *guard = Some(AnthropicCatalogEntry {
+                cache_key,
+                fetched_at: Instant::now(),
+                models,
+            });
+        }
+    }
+    ids
+}
+
+async fn fetch_openai_model_ids(client: &reqwest::Client, config: &NcaConfig) -> Vec<String> {
+    let key = match config.provider.openai.resolve_api_key() {
+        Some(k) => k,
+        None => return Vec::new(),
+    };
+    let base = config.provider.openai.base_url.trim_end_matches('/');
+    let ttl = catalog_cache_ttl();
+    let cache_key = format!("openai|{}|{:x}", base, api_key_tag(&key));
+
+    {
+        let guard = openai_catalog_cache().lock().ok();
+        if let Some(Some(entry)) = guard.as_ref().map(|g| g.as_ref()) {
+            if entry.cache_key == cache_key && !cache_stale(entry.fetched_at, ttl) {
+                if let Some(arr) = entry.value.get("data").and_then(|d| d.as_array()) {
+                    let mut ids: Vec<String> = arr.iter()
+                        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                        .collect();
+                    ids.sort();
+                    return ids;
+                }
+            }
+        }
+    }
+
+    let url = format!("{base}/v1/models");
+    let resp = match client.get(&url).bearer_auth(&key).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let v: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let value = Arc::new(v);
+    let mut ids = Vec::new();
+    if let Some(arr) = value.get("data").and_then(|d| d.as_array()) {
+        ids = arr.iter()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        ids.sort();
+    }
+    {
+        if let Ok(mut guard) = openai_catalog_cache().lock() {
+            *guard = Some(OpenAiCatalogEntry {
+                cache_key,
+                fetched_at: Instant::now(),
+                value,
+            });
+        }
+    }
+    ids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

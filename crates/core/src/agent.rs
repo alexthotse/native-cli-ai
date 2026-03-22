@@ -63,6 +63,11 @@ impl AgentLoop {
         self.messages.push(Message::system(prompt));
     }
 
+    /// Replace the LLM provider (e.g. after user switches provider in-session).
+    pub fn replace_provider(&mut self, provider: Box<dyn Provider>) {
+        self.provider = provider;
+    }
+
     /// Run one turn: send messages to the provider, execute any tool calls,
     /// and repeat until the provider returns a final text response.
     pub async fn run_turn(

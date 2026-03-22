@@ -672,6 +672,20 @@ impl Supervisor {
         }
     }
 
+    /// Reset for a fresh session: new ID, clear messages, clear children.
+    pub fn reset_for_new_session(&mut self) {
+        self.session_id = generate_session_id();
+        self.agent.messages.clear();
+        self.child_session_ids.clear();
+        self.session_summary = None;
+        self.status = SessionStatus::Running;
+        self.created_at = Utc::now();
+        self.last_summary_at_tokens = 0;
+        self.session_store = SessionStore::new(
+            self.workspace_root.join(&self.config.session.history_dir),
+        );
+    }
+
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -686,6 +700,18 @@ impl Supervisor {
 
     pub fn agent_mut(&mut self) -> &mut AgentLoop {
         &mut self.agent
+    }
+
+    /// Apply a new [`NcaConfig`] and rebuild the active LLM provider (in-session provider switch).
+    pub fn apply_nca_config(&mut self, config: NcaConfig) -> Result<(), ProviderError> {
+        let provider = build_provider(&config)?;
+        self.config = config;
+        self.model = self.config.provider.active_model().to_string();
+        let m = self.model.clone();
+        let agent = self.agent_mut();
+        agent.model = m;
+        agent.replace_provider(provider);
+        Ok(())
     }
 
     pub fn request_cancel(&self) {
