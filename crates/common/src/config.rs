@@ -1669,4 +1669,31 @@ onboarding_completed = true
         // onboarding_completed is false
         assert!(config.needs_onboarding());
     }
+
+    #[test]
+    fn onboarding_roundtrip_through_toml() {
+        let toml_str = r#"
+[ui]
+onboarding_completed = true
+
+[provider.minimax]
+api_key = "test-key"
+"#;
+        let partial: PartialNcaConfig = toml::from_str(toml_str).unwrap();
+        let mut config = NcaConfig::default();
+        config.merge(partial);
+        assert!(!config.needs_onboarding());
+    }
+
+    #[test]
+    fn onboarding_triggers_when_key_removed_after_completion() {
+        let toml_str = r#"
+[ui]
+onboarding_completed = true
+"#;
+        let partial: PartialNcaConfig = toml::from_str(toml_str).unwrap();
+        let mut config = NcaConfig::default();
+        config.merge(partial);
+        assert!(config.needs_onboarding());
+    }
 }
