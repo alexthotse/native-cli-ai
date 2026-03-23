@@ -1,0 +1,113 @@
+//! Lightweight API key validation per provider.
+
+use nca_common::config::ProviderKind;
+
+/// Result of an API key validation attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationResult {
+    Valid,
+    InvalidKey(String),
+    NetworkError(String),
+}
+
+use std::time::Duration;
+
+use reqwest::StatusCode;
+
+/// Validate an API key by making a lightweight request to the provider.
+///
+/// - OpenAI / OpenRouter: `GET /v1/models`
+/// - Anthropic / MiniMax: `POST /v1/messages` with minimal body
+pub async fn validate_api_key(
+    provider: ProviderKind,
+    api_key: &str,
+    base_url: &str,
+) -> ValidationResult {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return ValidationResult::NetworkError(format!("failed to build client: {e}")),
+    };
+
+    let result = match provider {
+        ProviderKind::OpenAi | ProviderKind::OpenRouter => {
+            let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+            client
+                .get(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .send()
+                .await
+        }
+        ProviderKind::Anthropic => {
+            let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+            client
+                .post(&url)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .body(r#"{"model":"claude-3-haiku-20240307","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#)
+                .send()
+                .await
+        }
+        ProviderKind::MiniMax => {
+            let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+            client
+                .post(&url)
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .body(r#"{"model":"MiniMax-M1","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#)
+                .send()
+                .await
+        }
+    };
+
+    match result {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                ValidationResult::Valid
+            } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+                ValidationResult::InvalidKey(
+                    "Invalid API key — please check and try again".into(),
+                )
+            } else {
+                // Some providers return 400 for minimal requests but the key is valid.
+                // A 400 with auth headers accepted means the key works.
+                if status == StatusCode::BAD_REQUEST {
+                    ValidationResult::Valid
+                } else {
+                    ValidationResult::NetworkError(format!("unexpected status: {status}"))
+                }
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                ValidationResult::NetworkError(
+                    "Connection timed out — check your network and try again".into(),
+                )
+            } else {
+                ValidationResult::NetworkError(format!(
+                    "Connection failed — check your network and try again ({e})"
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validation_result_variants_exist() {
+        let valid = ValidationResult::Valid;
+        let invalid = ValidationResult::InvalidKey("bad key".into());
+        let net_err = ValidationResult::NetworkError("timeout".into());
+        assert_eq!(valid, ValidationResult::Valid);
+        assert!(matches!(invalid, ValidationResult::InvalidKey(_)));
+        assert!(matches!(net_err, ValidationResult::NetworkError(_)));
+    }
+}
