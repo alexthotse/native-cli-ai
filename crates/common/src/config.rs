@@ -1629,7 +1629,7 @@ onboarding_completed = true
 
     #[test]
     fn any_api_key_present_returns_false_when_no_keys() {
-        let config = NcaConfig::default();
+        let config = config_without_env_keys();
         assert!(!config.provider.any_api_key_present());
     }
 
@@ -1640,9 +1640,20 @@ onboarding_completed = true
         assert!(config.provider.any_api_key_present());
     }
 
+    /// Returns an NcaConfig with env var fallbacks disabled so tests don't
+    /// pick up real API keys from the shell environment.
+    fn config_without_env_keys() -> NcaConfig {
+        let mut config = NcaConfig::default();
+        config.provider.minimax.api_key_env = "__NCA_TEST_NONE__".into();
+        config.provider.openai.api_key_env = "__NCA_TEST_NONE__".into();
+        config.provider.anthropic.api_key_env = "__NCA_TEST_NONE__".into();
+        config.provider.openrouter.api_key_env = "__NCA_TEST_NONE__".into();
+        config
+    }
+
     #[test]
     fn needs_onboarding_true_when_no_flag_and_no_keys() {
-        let config = NcaConfig::default();
+        let config = config_without_env_keys();
         assert!(config.needs_onboarding());
     }
 
@@ -1656,7 +1667,7 @@ onboarding_completed = true
 
     #[test]
     fn needs_onboarding_true_when_flag_set_but_all_keys_removed() {
-        let mut config = NcaConfig::default();
+        let mut config = config_without_env_keys();
         config.ui.onboarding_completed = true;
         // no keys set — safety net triggers
         assert!(config.needs_onboarding());
@@ -1692,7 +1703,7 @@ api_key = "test-key"
 onboarding_completed = true
 "#;
         let partial: PartialNcaConfig = toml::from_str(toml_str).unwrap();
-        let mut config = NcaConfig::default();
+        let mut config = config_without_env_keys();
         config.merge(partial);
         assert!(config.needs_onboarding());
     }

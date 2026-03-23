@@ -79,8 +79,9 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
         }
 
         // Poll events
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
                 // Global quit
                 if key.code == KeyCode::Char('c')
                     && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -168,14 +169,14 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
                             }
                         }
                         (KeyCode::Enter, _) => {
-                            if let Some(&row_idx) = sel_indices.get(connect_index) {
-                                if let ConnectRow::Provider { kind, .. } = &rows[row_idx] {
-                                    api_key_provider = Some(*kind);
-                                    api_key_open = true;
-                                    connect_open = false;
-                                    api_key_input.clear();
-                                    validation_status = None;
-                                }
+                            if let Some(&row_idx) = sel_indices.get(connect_index)
+                                && let ConnectRow::Provider { kind, .. } = &rows[row_idx]
+                            {
+                                api_key_provider = Some(*kind);
+                                api_key_open = true;
+                                connect_open = false;
+                                api_key_input.clear();
+                                validation_status = None;
                             }
                         }
                         (KeyCode::Backspace, _) => {
@@ -189,7 +190,6 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
                         _ => {}
                     }
                 }
-            }
         }
     }
 }
