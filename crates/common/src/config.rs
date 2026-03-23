@@ -584,6 +584,12 @@ impl ProviderConfig {
             ProviderKind::OpenAi => self.openai.resolve_api_key().is_some(),
         }
     }
+
+    /// Returns `true` if at least one provider has an API key configured
+    /// (either in config or via environment variable).
+    pub fn any_api_key_present(&self) -> bool {
+        ProviderKind::ALL.iter().any(|p| self.api_key_present_for(*p))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1613,5 +1619,18 @@ onboarding_completed = true
         let partial: PartialNcaConfig = toml::from_str(toml_str).unwrap();
         config.merge(partial);
         assert!(config.ui.onboarding_completed);
+    }
+
+    #[test]
+    fn any_api_key_present_returns_false_when_no_keys() {
+        let config = NcaConfig::default();
+        assert!(!config.provider.any_api_key_present());
+    }
+
+    #[test]
+    fn any_api_key_present_returns_true_when_one_key_set() {
+        let mut config = NcaConfig::default();
+        config.provider.openai.api_key = Some("sk-test".into());
+        assert!(config.provider.any_api_key_present());
     }
 }
