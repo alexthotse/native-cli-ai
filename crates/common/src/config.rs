@@ -1455,7 +1455,9 @@ fn default_model_aliases() -> BTreeMap<String, String> {
 
 fn resolve_api_key_value(inline: &Option<String>, env_name: &str) -> Option<String> {
     inline
-        .clone()
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .map(String::from)
         .or_else(|| env::var(env_name).ok())
         .filter(|v| !v.trim().is_empty())
 }
