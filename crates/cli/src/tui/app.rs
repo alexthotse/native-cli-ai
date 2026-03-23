@@ -2788,9 +2788,12 @@ pub fn run_blocking(
                             }
                             (KeyCode::Enter, _) => {
                                 if g.onboarding_mode {
-                                    if let Some(provider) = g.api_key_target_provider {
-                                        let key = g.api_key_input.clone();
-                                        if key.trim().is_empty() {
+                                    // Block input while validation is in flight
+                                    if matches!(g.validation_status, Some(crate::tui::state::OnboardingValidation::Validating)) {
+                                        // Already validating — ignore
+                                    } else if let Some(provider) = g.api_key_target_provider {
+                                        let key = g.api_key_input.trim().to_string();
+                                        if key.is_empty() {
                                             // Don't submit empty keys during onboarding
                                         } else {
                                             g.validation_status = Some(crate::tui::state::OnboardingValidation::Validating);

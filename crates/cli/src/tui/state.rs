@@ -284,6 +284,7 @@ impl TuiSessionState {
         self.api_key_input.clear();
         self.api_key_target_has_existing = has_existing;
         self.api_key_connect_after_save = connect_after_save;
+        self.validation_status = None;
     }
 
     pub fn close_api_key_modal(&mut self) {
@@ -292,6 +293,7 @@ impl TuiSessionState {
         self.api_key_input.clear();
         self.api_key_target_has_existing = false;
         self.api_key_connect_after_save = false;
+        self.validation_status = None;
     }
 
     pub fn open_info_modal(&mut self, title: impl Into<String>, lines: Vec<String>) {

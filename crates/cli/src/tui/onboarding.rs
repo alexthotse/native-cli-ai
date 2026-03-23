@@ -26,7 +26,17 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 
 /// Runs the onboarding TUI. Returns the updated config with the validated key
 /// and onboarding_completed = true, or an error if the user quits (Ctrl+C).
-pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> {
+pub async fn run_onboarding(config: NcaConfig) -> anyhow::Result<NcaConfig> {
+    let mut terminal = setup_terminal()?;
+    let result = run_onboarding_inner(config, &mut terminal).await;
+    restore_terminal();
+    result
+}
+
+async fn run_onboarding_inner(
+    mut config: NcaConfig,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+) -> anyhow::Result<NcaConfig> {
     let mut connect_open = true;
     let mut connect_search = String::new();
     let mut connect_index: usize = 0;
@@ -38,8 +48,6 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
     // Validation runs in a background tokio task; result is polled via shared state.
     let validation_state: ValidationState = Arc::new(Mutex::new(None));
     let spinner_start = Instant::now();
-
-    let mut terminal = setup_terminal()?;
 
     loop {
         // Poll validation result from background task
@@ -55,7 +63,6 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
                     tracing::warn!("onboarding: failed to save global config: {e}");
                 }
             }
-            restore_terminal();
             return Ok(config);
         }
 
@@ -104,7 +111,6 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
         {
             // Global quit
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                restore_terminal();
                 anyhow::bail!("onboarding cancelled by user");
             }
 

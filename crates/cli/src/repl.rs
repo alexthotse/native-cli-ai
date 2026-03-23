@@ -1909,17 +1909,26 @@ impl Repl {
                     if matches!(result, nca_core::provider::validate::ValidationResult::Valid) {
                         self.save_provider_api_key(provider, &api_key, ReplOutput::Tui(&tui_state))
                             .await?;
-                        self.apply_provider_in_session(provider, ReplOutput::Tui(&tui_state))
-                            .await?;
-                        // Complete onboarding inline
+                        if let Err(e) = self.apply_provider_in_session(provider, ReplOutput::Tui(&tui_state))
+                            .await
+                        {
+                            tracing::warn!("onboarding: provider apply failed: {e}");
+                            if let Ok(mut g) = tui_state.lock() {
+                                g.validation_status = Some(crate::tui::state::OnboardingValidation::Failed(
+                                    "Failed to apply provider — try again".into(),
+                                ));
+                                g.onboarding_mode = true;
+                            }
+                            continue;
+                        }
+                        // Only mark onboarding complete after successful save + apply
                         let mut cfg = self.runtime.config().clone();
                         cfg.ui.onboarding_completed = true;
                         if let Err(e) = cfg.save_global() {
                             tracing::warn!("onboarding flag save failed: {e}");
+                            // Key is saved and provider works — proceed anyway
                         }
-                        if let Err(e) = self.runtime.apply_nca_config(cfg) {
-                            tracing::warn!("onboarding config apply failed: {e}");
-                        }
+                        let _ = self.runtime.apply_nca_config(cfg);
                     }
                 }
                 TuiCmd::CompleteOnboarding => {
