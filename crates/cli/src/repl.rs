@@ -1907,28 +1907,27 @@ impl Repl {
                     }
                     // If validation succeeded, save key + complete onboarding
                     if matches!(result, nca_core::provider::validate::ValidationResult::Valid) {
-                        // Apply key to config and rebuild provider
+                        // Set the API key in config first
                         let mut cfg = self.runtime.config().clone();
                         cfg.set_provider_api_key(provider, &api_key);
-                        cfg.set_default_provider(provider);
                         if let Err(e) = self.runtime.apply_nca_config(cfg) {
-                            tracing::warn!("onboarding: provider apply failed: {e}");
+                            tracing::warn!("onboarding: api key apply failed: {e}");
                             if let Ok(mut g) = tui_state.lock() {
                                 g.validation_status = Some(crate::tui::state::OnboardingValidation::Failed(
-                                    format!("Failed to apply provider: {e}"),
+                                    format!("Failed to apply API key: {e}"),
                                 ));
                                 g.onboarding_mode = true;
                             }
                             continue;
                         }
-                        // Provider works — persist key + onboarding flag
+                        // Use apply_provider_in_session for provider switch + TUI model sync
+                        self.apply_provider_in_session(provider, ReplOutput::Tui(&tui_state))
+                            .await?;
+                        // Persist onboarding flag to global config only (not workspace)
                         let mut cfg = self.runtime.config().clone();
                         cfg.ui.onboarding_completed = true;
                         if let Err(e) = cfg.save_global() {
                             tracing::warn!("onboarding: global config save failed: {e}");
-                        }
-                        if let Err(e) = cfg.save_workspace_file(self.runtime.workspace_root()) {
-                            tracing::warn!("onboarding: workspace config save failed: {e}");
                         }
                         let _ = self.runtime.apply_nca_config(cfg);
                     }
