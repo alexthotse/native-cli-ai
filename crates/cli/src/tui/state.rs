@@ -50,6 +50,14 @@ pub struct SubagentRow {
     pub running: bool,
 }
 
+/// Status of an API key validation during onboarding.
+#[derive(Debug, Clone)]
+pub enum OnboardingValidation {
+    Validating,
+    Valid,
+    Failed(String),
+}
+
 pub struct TuiSessionState {
     pub blocks: Vec<DisplayBlock>,
     /// In-progress assistant text (shown below committed blocks until finalized).
@@ -152,6 +160,10 @@ pub struct TuiSessionState {
     pub session_picker_entries: Vec<String>,
     /// Scroll offset for the session picker viewport.
     pub session_picker_scroll: usize,
+    /// When true, the onboarding gate is active — connect modal is locked open.
+    pub onboarding_mode: bool,
+    /// Result of the most recent API key validation attempt (None = no attempt yet).
+    pub validation_status: Option<OnboardingValidation>,
 }
 
 #[derive(Debug, Clone)]
@@ -242,6 +254,8 @@ impl TuiSessionState {
             session_picker_index: 0,
             session_picker_entries: Vec::new(),
             session_picker_scroll: 0,
+            onboarding_mode: false,
+            validation_status: None,
         }
     }
 
