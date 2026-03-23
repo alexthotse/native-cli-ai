@@ -89,6 +89,11 @@ pub enum TuiCmd {
     OpenSessions,
     /// Cycle to the next recent model (F2 forward, Shift+F2 backward).
     CycleModel(bool),
+    /// Validate an API key for onboarding (provider, api_key).
+    /// The repl handler looks up base_url from config.
+    ValidateApiKey(ProviderKind, String),
+    /// Mark onboarding as complete and persist the flag.
+    CompleteOnboarding,
     /// Resume a different session by ID.
     ResumeSession(String),
 }
