@@ -110,4 +110,24 @@ mod tests {
         assert!(matches!(invalid, ValidationResult::InvalidKey(_)));
         assert!(matches!(net_err, ValidationResult::NetworkError(_)));
     }
+
+    #[test]
+    fn invalid_key_message_preserved() {
+        let msg = "Invalid API key — please check and try again";
+        let result = ValidationResult::InvalidKey(msg.into());
+        match result {
+            ValidationResult::InvalidKey(m) => assert_eq!(m, msg),
+            _ => panic!("expected InvalidKey"),
+        }
+    }
+
+    #[test]
+    fn network_error_message_preserved() {
+        let msg = "Connection timed out — check your network and try again";
+        let result = ValidationResult::NetworkError(msg.into());
+        match result {
+            ValidationResult::NetworkError(m) => assert_eq!(m, msg),
+            _ => panic!("expected NetworkError"),
+        }
+    }
 }
