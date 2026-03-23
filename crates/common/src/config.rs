@@ -282,6 +282,12 @@ impl NcaConfig {
     pub fn sync_default_model_from_provider(&mut self) {
         self.model.default_model = self.provider.active_model().to_string();
     }
+
+    /// Returns `true` if the first-run onboarding gate should be shown.
+    /// Triggers when: onboarding not completed OR all API keys have been removed.
+    pub fn needs_onboarding(&self) -> bool {
+        !self.ui.onboarding_completed || !self.provider.any_api_key_present()
+    }
 }
 
 /// User interface preferences persisted in config.
@@ -1632,5 +1638,35 @@ onboarding_completed = true
         let mut config = NcaConfig::default();
         config.provider.openai.api_key = Some("sk-test".into());
         assert!(config.provider.any_api_key_present());
+    }
+
+    #[test]
+    fn needs_onboarding_true_when_no_flag_and_no_keys() {
+        let config = NcaConfig::default();
+        assert!(config.needs_onboarding());
+    }
+
+    #[test]
+    fn needs_onboarding_false_when_flag_set_and_key_present() {
+        let mut config = NcaConfig::default();
+        config.ui.onboarding_completed = true;
+        config.provider.minimax.api_key = Some("test-key".into());
+        assert!(!config.needs_onboarding());
+    }
+
+    #[test]
+    fn needs_onboarding_true_when_flag_set_but_all_keys_removed() {
+        let mut config = NcaConfig::default();
+        config.ui.onboarding_completed = true;
+        // no keys set — safety net triggers
+        assert!(config.needs_onboarding());
+    }
+
+    #[test]
+    fn needs_onboarding_true_when_key_present_but_flag_not_set() {
+        let mut config = NcaConfig::default();
+        config.provider.openai.api_key = Some("sk-test".into());
+        // onboarding_completed is false
+        assert!(config.needs_onboarding());
     }
 }
