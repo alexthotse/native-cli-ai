@@ -4,24 +4,29 @@
 //! supervisor. Its only job is to collect and validate an API key, then
 //! persist it to the global config.
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use nca_common::config::{NcaConfig, ProviderKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
-use nca_common::config::{NcaConfig, ProviderKind};
 
-use super::app::{setup_terminal, restore_terminal};
-use super::connect_modal::{ConnectRow, build_connect_rows, selectable_row_indices};
+use super::app::{restore_terminal, setup_terminal};
+use super::connect_modal::{build_connect_rows, selectable_row_indices, ConnectRow};
 use super::state::OnboardingValidation;
+
+/// Shared validation state updated by the background task.
+type ValidationState = Arc<Mutex<Option<OnboardingValidation>>>;
+
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Runs the onboarding TUI. Returns the updated config with the validated key
 /// and onboarding_completed = true, or an error if the user quits (Ctrl+C).
 pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> {
-    // State for the onboarding flow
     let mut connect_open = true;
     let mut connect_search = String::new();
     let mut connect_index: usize = 0;
@@ -29,43 +34,19 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
     let mut api_key_open = false;
     let mut api_key_input = String::new();
     let mut api_key_provider: Option<ProviderKind> = None;
-    let mut validation_status: Option<OnboardingValidation> = None;
+
+    // Validation runs in a background tokio task; result is polled via shared state.
+    let validation_state: ValidationState = Arc::new(Mutex::new(None));
+    let spinner_start = Instant::now();
 
     let mut terminal = setup_terminal()?;
 
     loop {
-        // Render
-        terminal.draw(|f| {
-            let area = f.area();
+        // Poll validation result from background task
+        let current_validation = validation_state.lock().ok().and_then(|g| g.clone());
 
-            // Dark background
-            let bg = Block::default().style(Style::default().bg(Color::Black));
-            f.render_widget(bg, area);
-
-            // Title
-            let title = Paragraph::new("Welcome to nca -- connect a provider to get started")
-                .style(Style::default().fg(Color::White))
-                .alignment(ratatui::layout::Alignment::Center);
-            let title_y = area.height / 4;
-            f.render_widget(
-                title,
-                Rect {
-                    x: 0,
-                    y: title_y,
-                    width: area.width,
-                    height: 1,
-                },
-            );
-
-            if api_key_open {
-                render_api_key_modal(f, area, api_key_provider, &api_key_input, &validation_status);
-            } else if connect_open {
-                render_connect_modal(f, area, &connect_search, connect_index);
-            }
-        })?;
-
-        // Key is valid — save and exit
-        if let Some(OnboardingValidation::Valid) = &validation_status {
+        // Check if validation succeeded — save and exit
+        if let Some(OnboardingValidation::Valid) = &current_validation {
             if let Some(provider) = api_key_provider {
                 config.set_provider_api_key(provider, &api_key_input);
                 config.set_default_provider(provider);
@@ -78,118 +59,161 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
             return Ok(config);
         }
 
-        // Poll events
-        if event::poll(Duration::from_millis(50))?
+        let is_validating = matches!(&current_validation, Some(OnboardingValidation::Validating));
+        let spinner_idx =
+            (spinner_start.elapsed().as_millis() / 80) as usize % SPINNER_FRAMES.len();
+
+        // Render
+        terminal.draw(|f| {
+            let area = f.area();
+
+            let bg = Block::default().style(Style::default().bg(Color::Black));
+            f.render_widget(bg, area);
+
+            // Title
+            let title = Paragraph::new("Welcome to nca — connect a provider to get started")
+                .style(Style::default().fg(Color::White))
+                .alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(
+                title,
+                Rect {
+                    x: 0,
+                    y: area.height / 4,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+
+            if api_key_open {
+                render_api_key_modal(
+                    f,
+                    area,
+                    api_key_provider,
+                    &api_key_input,
+                    &current_validation,
+                    spinner_idx,
+                );
+            } else if connect_open {
+                render_connect_modal(f, area, &connect_search, connect_index);
+            }
+        })?;
+
+        // Poll events (short timeout so spinner animates smoothly)
+        if event::poll(Duration::from_millis(if is_validating { 30 } else { 50 }))?
             && let Event::Key(key) = event::read()?
         {
-                // Global quit
-                if key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    restore_terminal();
-                    anyhow::bail!("onboarding cancelled by user");
+            // Global quit
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                restore_terminal();
+                anyhow::bail!("onboarding cancelled by user");
+            }
+
+            if api_key_open {
+                // Block input while validating
+                if is_validating {
+                    continue;
                 }
 
-                if api_key_open {
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Esc, _) => {
-                            // Go back to connect
-                            api_key_open = false;
-                            api_key_input.clear();
-                            api_key_provider = None;
-                            validation_status = None;
-                            connect_open = true;
+                match (key.code, key.modifiers) {
+                    (KeyCode::Esc, _) => {
+                        api_key_open = false;
+                        api_key_input.clear();
+                        api_key_provider = None;
+                        if let Ok(mut g) = validation_state.lock() {
+                            *g = None;
                         }
-                        (KeyCode::Enter, _) => {
-                            if let Some(provider) = api_key_provider {
-                                let key_str = api_key_input.trim().to_string();
-                                if !key_str.is_empty()
-                                    && !matches!(
-                                        validation_status,
-                                        Some(OnboardingValidation::Validating)
-                                    )
-                                {
-                                    // Note: Validating state won't render since
-                                    // the await blocks, but we set it for the
-                                    // guard check above.
-                                    let _ = validation_status
-                                        .insert(OnboardingValidation::Validating);
-                                    let base_url =
-                                        config.provider.base_url_for(provider).to_string();
+                        connect_open = true;
+                    }
+                    (KeyCode::Enter, _) => {
+                        if let Some(provider) = api_key_provider {
+                            let key_str = api_key_input.trim().to_string();
+                            if !key_str.is_empty() {
+                                // Set validating state
+                                if let Ok(mut g) = validation_state.lock() {
+                                    *g = Some(OnboardingValidation::Validating);
+                                }
+
+                                // Spawn background validation task
+                                let base_url =
+                                    config.provider.base_url_for(provider).to_string();
+                                let vs = validation_state.clone();
+                                tokio::spawn(async move {
                                     let result =
                                         nca_core::provider::validate::validate_api_key(
                                             provider, &key_str, &base_url,
                                         )
                                         .await;
-                                    match result {
-                                        nca_core::provider::validate::ValidationResult::Valid => {
-                                            validation_status =
-                                                Some(OnboardingValidation::Valid);
-                                        }
-                                        nca_core::provider::validate::ValidationResult::InvalidKey(
-                                            msg,
-                                        ) => {
-                                            validation_status =
-                                                Some(OnboardingValidation::Failed(msg));
-                                        }
-                                        nca_core::provider::validate::ValidationResult::NetworkError(
-                                            msg,
-                                        ) => {
-                                            validation_status =
-                                                Some(OnboardingValidation::Failed(msg));
-                                        }
+                                    if let Ok(mut g) = vs.lock() {
+                                        *g = Some(match result {
+                                            nca_core::provider::validate::ValidationResult::Valid => {
+                                                OnboardingValidation::Valid
+                                            }
+                                            nca_core::provider::validate::ValidationResult::InvalidKey(msg) => {
+                                                OnboardingValidation::Failed(msg)
+                                            }
+                                            nca_core::provider::validate::ValidationResult::NetworkError(msg) => {
+                                                OnboardingValidation::Failed(msg)
+                                            }
+                                        });
                                     }
-                                }
+                                });
                             }
                         }
-                        (KeyCode::Backspace, _) => {
-                            api_key_input.pop();
-                            validation_status = None;
-                        }
-                        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                            api_key_input.push(c);
-                            validation_status = None;
-                        }
-                        _ => {}
                     }
-                } else if connect_open {
-                    let rows = build_connect_rows(&connect_search);
-                    let sel_indices = selectable_row_indices(&rows);
-                    let n_sel = sel_indices.len();
-
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Up, _) => {
-                            if n_sel > 0 {
-                                connect_index = connect_index.saturating_sub(1);
-                            }
+                    (KeyCode::Backspace, _) => {
+                        api_key_input.pop();
+                        if let Ok(mut g) = validation_state.lock() {
+                            *g = None;
                         }
-                        (KeyCode::Down, _) => {
-                            if n_sel > 0 {
-                                connect_index = (connect_index + 1).min(n_sel - 1);
-                            }
-                        }
-                        (KeyCode::Enter, _) => {
-                            if let Some(&row_idx) = sel_indices.get(connect_index)
-                                && let ConnectRow::Provider { kind, .. } = &rows[row_idx]
-                            {
-                                api_key_provider = Some(*kind);
-                                api_key_open = true;
-                                connect_open = false;
-                                api_key_input.clear();
-                                validation_status = None;
-                            }
-                        }
-                        (KeyCode::Backspace, _) => {
-                            connect_search.pop();
-                            connect_index = 0;
-                        }
-                        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                            connect_search.push(c);
-                            connect_index = 0;
-                        }
-                        _ => {}
                     }
+                    (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        api_key_input.push(c);
+                        if let Ok(mut g) = validation_state.lock() {
+                            *g = None;
+                        }
+                    }
+                    _ => {}
                 }
+            } else if connect_open {
+                let rows = build_connect_rows(&connect_search);
+                let sel_indices = selectable_row_indices(&rows);
+                let n_sel = sel_indices.len();
+
+                match (key.code, key.modifiers) {
+                    (KeyCode::Up, _) => {
+                        if n_sel > 0 {
+                            connect_index = connect_index.saturating_sub(1);
+                        }
+                    }
+                    (KeyCode::Down, _) => {
+                        if n_sel > 0 {
+                            connect_index = (connect_index + 1).min(n_sel - 1);
+                        }
+                    }
+                    (KeyCode::Enter, _) => {
+                        if let Some(&row_idx) = sel_indices.get(connect_index)
+                            && let ConnectRow::Provider { kind, .. } = &rows[row_idx]
+                        {
+                            api_key_provider = Some(*kind);
+                            api_key_open = true;
+                            connect_open = false;
+                            api_key_input.clear();
+                            if let Ok(mut g) = validation_state.lock() {
+                                *g = None;
+                            }
+                        }
+                    }
+                    (KeyCode::Backspace, _) => {
+                        connect_search.pop();
+                        connect_index = 0;
+                    }
+                    (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        connect_search.push(c);
+                        connect_index = 0;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
@@ -205,12 +229,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-fn render_connect_modal(
-    f: &mut Frame,
-    area: Rect,
-    search: &str,
-    selected: usize,
-) {
+fn render_connect_modal(f: &mut Frame, area: Rect, search: &str, selected: usize) {
     let modal_rect = centered_rect(50, 14, area);
     f.render_widget(Clear, modal_rect);
 
@@ -226,7 +245,6 @@ fn render_connect_modal(
 
     let mut lines = Vec::new();
 
-    // Search bar
     let search_display = if search.is_empty() {
         "Type to filter...".to_string()
     } else {
@@ -253,7 +271,9 @@ fn render_connect_modal(
                     Style::default().fg(Color::Yellow),
                 )));
             }
-            ConnectRow::Provider { title, subtitle, .. } => {
+            ConnectRow::Provider {
+                title, subtitle, ..
+            } => {
                 let is_selected =
                     sel_indices.iter().position(|&si| si == i) == Some(selected);
                 let style = if is_selected {
@@ -263,7 +283,7 @@ fn render_connect_modal(
                 };
                 let prefix = if is_selected { "> " } else { "  " };
                 lines.push(Line::from(Span::styled(
-                    format!("{prefix}{title} -- {subtitle}"),
+                    format!("{prefix}{title} — {subtitle}"),
                     style,
                 )));
             }
@@ -280,6 +300,7 @@ fn render_api_key_modal(
     provider: Option<ProviderKind>,
     input: &str,
     validation: &Option<OnboardingValidation>,
+    spinner_idx: usize,
 ) {
     let modal_rect = centered_rect(50, 10, area);
     f.render_widget(Clear, modal_rect);
@@ -310,13 +331,19 @@ fn render_api_key_modal(
         Line::from(""),
     ];
 
-    // Validation status
     match validation {
         Some(OnboardingValidation::Validating) => {
-            lines.push(Line::from(Span::styled(
-                "Validating...",
-                Style::default().fg(Color::Yellow),
-            )));
+            let frame = SPINNER_FRAMES[spinner_idx];
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{frame} "),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    "Validating API key...",
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]));
         }
         Some(OnboardingValidation::Failed(msg)) => {
             lines.push(Line::from(Span::styled(
