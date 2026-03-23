@@ -48,7 +48,7 @@ pub async fn run_onboarding(mut config: NcaConfig) -> anyhow::Result<NcaConfig> 
         // Check if validation succeeded — save and exit
         if let Some(OnboardingValidation::Valid) = &current_validation {
             if let Some(provider) = api_key_provider {
-                config.set_provider_api_key(provider, &api_key_input);
+                config.set_provider_api_key(provider, api_key_input.trim());
                 config.set_default_provider(provider);
                 config.ui.onboarding_completed = true;
                 if let Err(e) = config.save_global() {
