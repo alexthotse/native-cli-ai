@@ -1907,22 +1907,24 @@ impl Repl {
                     }
                     // If validation succeeded, save key + complete onboarding
                     if matches!(result, nca_core::provider::validate::ValidationResult::Valid) {
-                        // Set the API key in config first
+                        // Apply key + switch provider in one step
                         let mut cfg = self.runtime.config().clone();
                         cfg.set_provider_api_key(provider, &api_key);
+                        cfg.set_default_provider(provider);
                         if let Err(e) = self.runtime.apply_nca_config(cfg) {
-                            tracing::warn!("onboarding: api key apply failed: {e}");
+                            tracing::warn!("onboarding: provider apply failed: {e}");
                             if let Ok(mut g) = tui_state.lock() {
                                 g.validation_status = Some(crate::tui::state::OnboardingValidation::Failed(
-                                    format!("Failed to apply API key: {e}"),
+                                    format!("Failed to apply provider: {e}"),
                                 ));
                                 g.onboarding_mode = true;
                             }
                             continue;
                         }
-                        // Use apply_provider_in_session for provider switch + TUI model sync
-                        self.apply_provider_in_session(provider, ReplOutput::Tui(&tui_state))
-                            .await?;
+                        // Sync TUI model display
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.model = self.runtime.model().to_string();
+                        }
                         // Persist onboarding flag to global config only (not workspace)
                         let mut cfg = self.runtime.config().clone();
                         cfg.ui.onboarding_completed = true;

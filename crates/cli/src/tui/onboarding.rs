@@ -61,6 +61,10 @@ async fn run_onboarding_inner(
                 config.ui.onboarding_completed = true;
                 if let Err(e) = config.save_global() {
                     tracing::warn!("onboarding: failed to save global config: {e}");
+                    eprintln!(
+                        "Warning: config saved in memory but failed to write to disk: {e}\n\
+                         You may need to re-enter your API key on next launch."
+                    );
                 }
             }
             return Ok(config);

@@ -40,25 +40,17 @@ pub async fn validate_api_key(
                 .send()
                 .await
         }
-        ProviderKind::Anthropic => {
+        ProviderKind::Anthropic | ProviderKind::MiniMax => {
+            // Send a minimal POST with an intentionally empty body.
+            // A valid key returns 400 (bad request); an invalid key returns 401/403.
+            // This avoids coupling validation to any specific model ID.
             let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
             client
                 .post(&url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
-                .body(r#"{"model":"claude-3-haiku-20240307","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#)
-                .send()
-                .await
-        }
-        ProviderKind::MiniMax => {
-            let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
-            client
-                .post(&url)
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .body(r#"{"model":"MiniMax-M1","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#)
+                .body(r#"{"max_tokens":1,"messages":[]}"#)
                 .send()
                 .await
         }
