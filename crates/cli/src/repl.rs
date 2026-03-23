@@ -1553,11 +1553,11 @@ impl Repl {
         )));
 
         // Check if first-run onboarding is needed
-        if self.runtime.config().needs_onboarding() {
-            if let Ok(mut g) = tui_state.lock() {
-                g.onboarding_mode = true;
-                g.open_connect_modal();
-            }
+        if self.runtime.config().needs_onboarding()
+            && let Ok(mut g) = tui_state.lock()
+        {
+            g.onboarding_mode = true;
+            g.open_connect_modal();
         }
 
         let log_path = self.runtime.event_log_path();

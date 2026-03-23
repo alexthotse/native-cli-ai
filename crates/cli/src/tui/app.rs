@@ -93,6 +93,7 @@ pub enum TuiCmd {
     /// The repl handler looks up base_url from config.
     ValidateApiKey(ProviderKind, String),
     /// Mark onboarding as complete and persist the flag.
+    #[allow(dead_code)]
     CompleteOnboarding,
     /// Resume a different session by ID.
     ResumeSession(String),
