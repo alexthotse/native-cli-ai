@@ -299,6 +299,9 @@ pub struct UiConfig {
     /// Lines per scroll event (default 3).
     #[serde(default = "default_scroll_speed")]
     pub scroll_speed: u16,
+    /// Whether the user has completed the first-run onboarding flow.
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 fn default_scroll_speed() -> u16 {
@@ -312,6 +315,7 @@ impl Default for UiConfig {
             theme: None,
             hide_tips: false,
             scroll_speed: default_scroll_speed(),
+            onboarding_completed: false,
         }
     }
 }
@@ -329,6 +333,9 @@ impl UiConfig {
         }
         if let Some(scroll_speed) = partial.scroll_speed {
             self.scroll_speed = scroll_speed;
+        }
+        if let Some(onboarding_completed) = partial.onboarding_completed {
+            self.onboarding_completed = onboarding_completed;
         }
     }
 }
@@ -1279,6 +1286,7 @@ struct PartialUiConfig {
     theme: Option<String>,
     hide_tips: Option<bool>,
     scroll_speed: Option<u16>,
+    onboarding_completed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1587,5 +1595,23 @@ mod tests {
             Some(ProviderKind::OpenAi)
         );
         assert_eq!(ProviderKind::from_cli_name("nope"), None);
+    }
+
+    #[test]
+    fn onboarding_completed_defaults_to_false() {
+        let config = NcaConfig::default();
+        assert!(!config.ui.onboarding_completed);
+    }
+
+    #[test]
+    fn onboarding_completed_merges_from_partial() {
+        let mut config = NcaConfig::default();
+        let toml_str = r#"
+[ui]
+onboarding_completed = true
+"#;
+        let partial: PartialNcaConfig = toml::from_str(toml_str).unwrap();
+        config.merge(partial);
+        assert!(config.ui.onboarding_completed);
     }
 }
