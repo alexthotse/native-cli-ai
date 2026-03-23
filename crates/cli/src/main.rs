@@ -592,7 +592,17 @@ async fn try_main() -> anyhow::Result<()> {
                     )
                     .await?;
                 }
-            } else if cli.resume {
+            } else {
+                // First-run onboarding: show connect modal before building runtime
+                let onboarding_tui = !cli.no_tui
+                    && stdout().is_terminal()
+                    && stdin().is_terminal()
+                    && matches!(cli.stream, StreamMode::Human);
+                if config.needs_onboarding() && onboarding_tui {
+                    config = crate::tui::onboarding::run_onboarding(config).await?;
+                }
+
+                if cli.resume {
                 if let Some(mode) = cli.permission_mode {
                     config.permissions.mode = mode.into();
                 }
@@ -725,6 +735,7 @@ async fn try_main() -> anyhow::Result<()> {
                         repl.run().await?;
                     }
                 }
+            }
             }
         }
     }
