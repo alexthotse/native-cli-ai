@@ -2102,7 +2102,26 @@ pub fn run_blocking(
                     } else {
                         "*".repeat(g.api_key_input.chars().count())
                     };
-                    let lines = vec![
+                    let validation_line = if g.onboarding_mode {
+                        match &g.validation_status {
+                            Some(crate::tui::state::OnboardingValidation::Validating) => {
+                                Some(Line::from(Span::styled(
+                                    " Validating...",
+                                    Style::default().fg(Color::Yellow),
+                                )))
+                            }
+                            Some(crate::tui::state::OnboardingValidation::Failed(msg)) => {
+                                Some(Line::from(Span::styled(
+                                    format!(" {}", msg),
+                                    Style::default().fg(Color::Red),
+                                )))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let mut lines = vec![
                         Line::from(vec![
                             Span::styled(
                                 format!(" Provider: {provider}"),
@@ -2123,6 +2142,9 @@ pub fn run_blocking(
                             Style::default().fg(theme::MUTED),
                         )),
                     ];
+                    if let Some(vline) = validation_line {
+                        lines.push(vline);
+                    }
                     frame.render_widget(ClearWidget, popup_area);
                     let popup = Paragraph::new(Text::from(lines))
                         .block(
@@ -2709,7 +2731,9 @@ pub fn run_blocking(
                         let n_sel = selectable_row_indices(&rows).len();
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => {
-                                g.close_connect_modal();
+                                if !g.onboarding_mode {
+                                    g.close_connect_modal();
+                                }
                             }
                             (KeyCode::Up, _) => {
                                 if n_sel > 0 {
@@ -2756,16 +2780,39 @@ pub fn run_blocking(
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => {
                                 g.close_api_key_modal();
+                                if g.onboarding_mode {
+                                    // Go back to connect modal instead of closing entirely
+                                    g.open_connect_modal();
+                                }
                             }
                             (KeyCode::Enter, _) => {
-                                drop(g);
-                                let _ = cmd_tx.send(TuiCmd::Submit(String::new()));
+                                if g.onboarding_mode {
+                                    if let Some(provider) = g.api_key_target_provider {
+                                        let key = g.api_key_input.clone();
+                                        if key.trim().is_empty() {
+                                            // Don't submit empty keys during onboarding
+                                        } else {
+                                            g.validation_status = Some(crate::tui::state::OnboardingValidation::Validating);
+                                            drop(g);
+                                            let _ = cmd_tx.send(TuiCmd::ValidateApiKey(provider, key));
+                                        }
+                                    }
+                                } else {
+                                    drop(g);
+                                    let _ = cmd_tx.send(TuiCmd::Submit(String::new()));
+                                }
                             }
                             (KeyCode::Backspace, _) => {
                                 g.api_key_input.pop();
+                                if g.onboarding_mode {
+                                    g.validation_status = None;
+                                }
                             }
                             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                                 g.api_key_input.push(c);
+                                if g.onboarding_mode {
+                                    g.validation_status = None; // Clear stale error on new input
+                                }
                             }
                             _ => {}
                         }
