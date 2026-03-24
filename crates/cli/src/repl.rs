@@ -1875,6 +1875,75 @@ impl Repl {
                         ));
                     }
                 }
+                TuiCmd::ValidateApiKey(provider, api_key) => {
+                    // Set validating state
+                    if let Ok(mut g) = tui_state.lock() {
+                        g.validation_status = Some(crate::tui::state::OnboardingValidation::Validating);
+                    }
+                    // Look up base_url from config
+                    let base_url = self.runtime.config().provider.base_url_for(provider).to_string();
+                    // Run async validation
+                    let result = nca_core::provider::validate::validate_api_key(
+                        provider,
+                        &api_key,
+                        &base_url,
+                    ).await;
+                    if let Ok(mut g) = tui_state.lock() {
+                        match &result {
+                            nca_core::provider::validate::ValidationResult::Valid => {
+                                // Save key and complete onboarding
+                                g.validation_status = Some(crate::tui::state::OnboardingValidation::Valid);
+                                g.close_api_key_modal();
+                                g.close_connect_modal();
+                                g.onboarding_mode = false;
+                            }
+                            nca_core::provider::validate::ValidationResult::InvalidKey(msg) => {
+                                g.validation_status = Some(crate::tui::state::OnboardingValidation::Failed(msg.clone()));
+                            }
+                            nca_core::provider::validate::ValidationResult::NetworkError(msg) => {
+                                g.validation_status = Some(crate::tui::state::OnboardingValidation::Failed(msg.clone()));
+                            }
+                        }
+                    }
+                    // If validation succeeded, save key + complete onboarding
+                    if matches!(result, nca_core::provider::validate::ValidationResult::Valid) {
+                        // Apply key + switch provider in one step
+                        let mut cfg = self.runtime.config().clone();
+                        cfg.set_provider_api_key(provider, &api_key);
+                        cfg.set_default_provider(provider);
+                        if let Err(e) = self.runtime.apply_nca_config(cfg) {
+                            tracing::warn!("onboarding: provider apply failed: {e}");
+                            if let Ok(mut g) = tui_state.lock() {
+                                g.validation_status = Some(crate::tui::state::OnboardingValidation::Failed(
+                                    format!("Failed to apply provider: {e}"),
+                                ));
+                                g.onboarding_mode = true;
+                            }
+                            continue;
+                        }
+                        // Sync TUI model display
+                        if let Ok(mut g) = tui_state.lock() {
+                            g.model = self.runtime.model().to_string();
+                        }
+                        // Persist onboarding flag to global config only (not workspace)
+                        let mut cfg = self.runtime.config().clone();
+                        cfg.ui.onboarding_completed = true;
+                        if let Err(e) = cfg.save_global() {
+                            tracing::warn!("onboarding: global config save failed: {e}");
+                        }
+                        let _ = self.runtime.apply_nca_config(cfg);
+                    }
+                }
+                TuiCmd::CompleteOnboarding => {
+                    let mut cfg = self.runtime.config().clone();
+                    cfg.ui.onboarding_completed = true;
+                    if let Err(e) = cfg.save_global() {
+                        tracing::warn!("onboarding flag save failed: {e}");
+                    }
+                    if let Err(e) = self.runtime.apply_nca_config(cfg) {
+                        tracing::warn!("onboarding config apply failed: {e}");
+                    }
+                }
                 TuiCmd::QuestionAnswer(selection) => {
                     let qid = if let Ok(g) = tui_state.lock() {
                         g.active_question.as_ref().map(|q| q.question_id.clone())

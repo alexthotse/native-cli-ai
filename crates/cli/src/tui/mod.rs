@@ -3,6 +3,7 @@
 pub mod app;
 pub mod bridge;
 pub mod connect_modal;
+pub mod onboarding;
 pub mod replay;
 pub mod state;
 

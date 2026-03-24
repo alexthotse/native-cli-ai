@@ -282,6 +282,12 @@ impl NcaConfig {
     pub fn sync_default_model_from_provider(&mut self) {
         self.model.default_model = self.provider.active_model().to_string();
     }
+
+    /// Returns `true` if the first-run onboarding gate should be shown.
+    /// Triggers when: onboarding not completed OR all API keys have been removed.
+    pub fn needs_onboarding(&self) -> bool {
+        !self.ui.onboarding_completed || !self.provider.any_api_key_present()
+    }
 }
 
 /// User interface preferences persisted in config.
@@ -299,6 +305,9 @@ pub struct UiConfig {
     /// Lines per scroll event (default 3).
     #[serde(default = "default_scroll_speed")]
     pub scroll_speed: u16,
+    /// Whether the user has completed the first-run onboarding flow.
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 fn default_scroll_speed() -> u16 {
@@ -312,6 +321,7 @@ impl Default for UiConfig {
             theme: None,
             hide_tips: false,
             scroll_speed: default_scroll_speed(),
+            onboarding_completed: false,
         }
     }
 }
@@ -329,6 +339,9 @@ impl UiConfig {
         }
         if let Some(scroll_speed) = partial.scroll_speed {
             self.scroll_speed = scroll_speed;
+        }
+        if let Some(onboarding_completed) = partial.onboarding_completed {
+            self.onboarding_completed = onboarding_completed;
         }
     }
 }
@@ -576,6 +589,12 @@ impl ProviderConfig {
             ProviderKind::Anthropic => self.anthropic.resolve_api_key().is_some(),
             ProviderKind::OpenAi => self.openai.resolve_api_key().is_some(),
         }
+    }
+
+    /// Returns `true` if at least one provider has an API key configured
+    /// (either in config or via environment variable).
+    pub fn any_api_key_present(&self) -> bool {
+        ProviderKind::ALL.iter().any(|p| self.api_key_present_for(*p))
     }
 }
 
@@ -1279,6 +1298,7 @@ struct PartialUiConfig {
     theme: Option<String>,
     hide_tips: Option<bool>,
     scroll_speed: Option<u16>,
+    onboarding_completed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1434,7 +1454,12 @@ fn default_model_aliases() -> BTreeMap<String, String> {
 }
 
 fn resolve_api_key_value(inline: &Option<String>, env_name: &str) -> Option<String> {
-    inline.clone().or_else(|| env::var(env_name).ok())
+    inline
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .map(String::from)
+        .or_else(|| env::var(env_name).ok())
+        .filter(|v| !v.trim().is_empty())
 }
 
 fn default_skill_directories() -> Vec<PathBuf> {
@@ -1587,5 +1612,104 @@ mod tests {
             Some(ProviderKind::OpenAi)
         );
         assert_eq!(ProviderKind::from_cli_name("nope"), None);
+    }
+
+    #[test]
+    fn onboarding_completed_defaults_to_false() {
+        let config = NcaConfig::default();
+        assert!(!config.ui.onboarding_completed);
+    }
+
+    #[test]
+    fn onboarding_completed_merges_from_partial() {
+        let mut config = NcaConfig::default();
+        let toml_str = r#"
+[ui]
+onboarding_completed = true
+"#;
+        let partial: PartialNcaConfig = toml::from_str(toml_str).unwrap();
+        config.merge(partial);
+        assert!(config.ui.onboarding_completed);
+    }
+
+    #[test]
+    fn any_api_key_present_returns_false_when_no_keys() {
+        let config = config_without_env_keys();
+        assert!(!config.provider.any_api_key_present());
+    }
+
+    #[test]
+    fn any_api_key_present_returns_true_when_one_key_set() {
+        let mut config = NcaConfig::default();
+        config.provider.openai.api_key = Some("sk-test".into());
+        assert!(config.provider.any_api_key_present());
+    }
+
+    /// Returns an NcaConfig with env var fallbacks disabled so tests don't
+    /// pick up real API keys from the shell environment.
+    fn config_without_env_keys() -> NcaConfig {
+        let mut config = NcaConfig::default();
+        config.provider.minimax.api_key_env = "__NCA_TEST_NONE__".into();
+        config.provider.openai.api_key_env = "__NCA_TEST_NONE__".into();
+        config.provider.anthropic.api_key_env = "__NCA_TEST_NONE__".into();
+        config.provider.openrouter.api_key_env = "__NCA_TEST_NONE__".into();
+        config
+    }
+
+    #[test]
+    fn needs_onboarding_true_when_no_flag_and_no_keys() {
+        let config = config_without_env_keys();
+        assert!(config.needs_onboarding());
+    }
+
+    #[test]
+    fn needs_onboarding_false_when_flag_set_and_key_present() {
+        let mut config = NcaConfig::default();
+        config.ui.onboarding_completed = true;
+        config.provider.minimax.api_key = Some("test-key".into());
+        assert!(!config.needs_onboarding());
+    }
+
+    #[test]
+    fn needs_onboarding_true_when_flag_set_but_all_keys_removed() {
+        let mut config = config_without_env_keys();
+        config.ui.onboarding_completed = true;
+        // no keys set — safety net triggers
+        assert!(config.needs_onboarding());
+    }
+
+    #[test]
+    fn needs_onboarding_true_when_key_present_but_flag_not_set() {
+        let mut config = NcaConfig::default();
+        config.provider.openai.api_key = Some("sk-test".into());
+        // onboarding_completed is false
+        assert!(config.needs_onboarding());
+    }
+
+    #[test]
+    fn onboarding_roundtrip_through_toml() {
+        let toml_str = r#"
+[ui]
+onboarding_completed = true
+
+[provider.minimax]
+api_key = "test-key"
+"#;
+        let partial: PartialNcaConfig = toml::from_str(toml_str).unwrap();
+        let mut config = NcaConfig::default();
+        config.merge(partial);
+        assert!(!config.needs_onboarding());
+    }
+
+    #[test]
+    fn onboarding_triggers_when_key_removed_after_completion() {
+        let toml_str = r#"
+[ui]
+onboarding_completed = true
+"#;
+        let partial: PartialNcaConfig = toml::from_str(toml_str).unwrap();
+        let mut config = config_without_env_keys();
+        config.merge(partial);
+        assert!(config.needs_onboarding());
     }
 }
