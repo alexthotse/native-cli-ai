@@ -155,6 +155,10 @@ pub struct TuiSessionState {
     /// Agent profile picker popup.
     pub agent_picker_open: bool,
     pub agent_picker_index: usize,
+    /// Question modal popup (arrow-key option picker).
+    pub question_modal_open: bool,
+    pub question_modal_index: usize,
+    pub question_modal_scroll: usize,
     /// Command palette selection index (separate from slash_menu_index).
     pub palette_index: usize,
     /// Session picker popup (interactive list with resume).
@@ -254,6 +258,9 @@ impl TuiSessionState {
             permission_picker_index: 0,
             agent_picker_open: false,
             agent_picker_index: 0,
+            question_modal_open: false,
+            question_modal_index: 0,
+            question_modal_scroll: 0,
             palette_index: 0,
             session_picker_open: false,
             session_picker_search: String::new(),
@@ -352,6 +359,18 @@ impl TuiSessionState {
         self.agent_picker_index = 0;
     }
 
+    pub fn open_question_modal(&mut self) {
+        self.question_modal_open = true;
+        self.question_modal_index = 0;
+        self.question_modal_scroll = 0;
+    }
+
+    pub fn close_question_modal(&mut self) {
+        self.question_modal_open = false;
+        self.question_modal_index = 0;
+        self.question_modal_scroll = 0;
+    }
+
     pub fn open_session_picker(&mut self, entries: Vec<String>, current: &str) {
         self.session_picker_open = true;
         self.session_picker_search.clear();
@@ -403,6 +422,7 @@ impl TuiSessionState {
     pub fn clear_replayed_interaction_state(&mut self) {
         self.active_approval = None;
         self.active_question = None;
+        self.close_question_modal();
     }
 
     pub fn clear_active_approval_if_matches(&mut self, call_id: &str) {
@@ -588,12 +608,14 @@ impl TuiSessionState {
                 self.blocks.push(DisplayBlock::Question(question.clone()));
                 // Bring the prompt into view when follow-tail is on (default).
                 self.transcript_follow_tail = true;
+                self.open_question_modal();
             }
             AgentEvent::QuestionResolved {
                 question_id,
                 selection,
             } => {
                 self.active_question = None;
+                self.close_question_modal();
                 self.blocks.push(DisplayBlock::System(format!(
                     "Answered question {question_id}: {selection:?}"
                 )));
@@ -874,5 +896,77 @@ mod tests {
 
         assert!(st.active_approval.is_none());
         assert!(st.active_question.is_none());
+    }
+
+    #[test]
+    fn open_close_question_modal() {
+        let mut st = TuiSessionState::new(
+            "s".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+            PathBuf::from("/tmp"),
+        );
+        assert!(!st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
+
+        st.open_question_modal();
+        assert!(st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
+        assert_eq!(st.question_modal_scroll, 0);
+
+        st.question_modal_index = 3;
+        st.close_question_modal();
+        assert!(!st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
+        assert_eq!(st.question_modal_scroll, 0);
+    }
+
+    #[test]
+    fn question_requested_opens_modal() {
+        let mut st = TuiSessionState::new(
+            "s".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+            PathBuf::from("/tmp"),
+        );
+        let q = InteractiveQuestionPayload {
+            question_id: "q-1".into(),
+            call_id: "c1".into(),
+            prompt: "Pick".into(),
+            options: vec![QuestionOption {
+                id: "a".into(),
+                label: "A".into(),
+            }],
+            allow_custom: true,
+            suggested_answer: "A".into(),
+        };
+        st.apply_event(&AgentEvent::QuestionRequested {
+            question: q.clone(),
+        });
+        assert!(st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
+        assert!(st.active_question.is_some());
+    }
+
+    #[test]
+    fn question_resolved_closes_modal() {
+        let mut st = TuiSessionState::new(
+            "s".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+            PathBuf::from("/tmp"),
+        );
+        st.question_modal_open = true;
+        st.question_modal_index = 2;
+        st.apply_event(&AgentEvent::QuestionResolved {
+            question_id: "q-1".into(),
+            selection: QuestionSelection::Suggested,
+        });
+        assert!(st.active_question.is_none());
+        assert!(!st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
     }
 }
