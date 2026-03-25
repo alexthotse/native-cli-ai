@@ -18,6 +18,7 @@ use nca_core::hooks::{HookEventKind, HookRunner};
 use nca_core::provider::ProviderError;
 use nca_core::provider::factory::build_provider;
 use nca_core::tools::AskQuestionTool;
+use nca_core::tools::InvokeSkillTool;
 use nca_core::tools::ToolRegistry;
 use nca_core::tools::mcp::load_mcp_tools;
 use nca_core::tools::spawn_subagent::{SpawnRequest, SpawnSubagentTool};
@@ -181,7 +182,10 @@ impl Supervisor {
             event_tx.clone(),
             question_pending.clone(),
         )));
-
+        tools.register(Box::new(InvokeSkillTool::new(
+            workspace_root.clone(),
+            config.harness.skill_directories.clone(),
+        )));
         let session_id = cfg.session_id.unwrap_or_else(generate_session_id);
         let session_store = SessionStore::new(workspace_root.join(&config.session.history_dir));
 
