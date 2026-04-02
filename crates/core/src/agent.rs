@@ -1,5 +1,5 @@
 use futures_util::future::join_all;
-use nca_common::event::AgentEvent;
+use nca_common::event::{AgentEvent, BusyState};
 use nca_common::message::{ContentPart, ImageAttachment, Message, MessageToolCall};
 use nca_common::tool::{PermissionTier, ToolCall, ToolDefinition, ToolResult};
 use serde_json::json;
@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::approval::{ApprovalPolicy, ApprovalVerdict};
 use crate::cost::CostTracker;
@@ -112,6 +113,10 @@ impl AgentLoop {
         let mut empty_retries = 0_u32;
         let mut attachments_cleaned = attachments.is_empty();
         const MAX_EMPTY_RETRIES: u32 = 2;
+        // Consecutive failures of the same tool — stops infinite retry loops.
+        let mut consecutive_tool_failures: u32 = 0;
+        let mut last_failed_tool: String = String::new();
+        const MAX_CONSECUTIVE_TOOL_FAILURES: u32 = 3;
 
         let final_text = loop {
             if self.is_cancelled() {
@@ -129,6 +134,10 @@ impl AgentLoop {
                 )));
             }
 
+            self.emit(AgentEvent::BusyStateChanged {
+                state: BusyState::Thinking,
+            })
+            .await;
             self.emit(AgentEvent::Checkpoint {
                 phase: "provider_request".into(),
                 detail: format!("Starting model turn {turn}"),
@@ -152,16 +161,33 @@ impl AgentLoop {
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             let mut got_usage = false;
 
-            while let Some(chunk) = stream.recv().await {
-                if self.is_cancelled() {
-                    self.emit(AgentEvent::Error {
-                        message: "Run cancelled while streaming model output".into(),
-                    })
-                    .await;
-                    return Err(ProviderError::Other("run cancelled".into()));
-                }
+            let mut cancel_poll = tokio::time::interval(Duration::from_millis(25));
+            cancel_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                let chunk = tokio::select! {
+                    _ = cancel_poll.tick() => {
+                        if self.is_cancelled() {
+                            self.emit(AgentEvent::Error {
+                                message: "Run cancelled while streaming model output".into(),
+                            })
+                            .await;
+                            return Err(ProviderError::Other("run cancelled".into()));
+                        }
+                        continue;
+                    }
+                    chunk = stream.recv() => chunk,
+                };
+                let Some(chunk) = chunk else {
+                    break;
+                };
                 match chunk {
                     StreamChunk::TextDelta(delta) => {
+                        if assistant_text.is_empty() {
+                            self.emit(AgentEvent::BusyStateChanged {
+                                state: BusyState::Streaming,
+                            })
+                            .await;
+                        }
                         assistant_text.push_str(&delta);
                         self.emit(AgentEvent::TokensStreamed { delta }).await;
                     }
@@ -465,6 +491,23 @@ impl AgentLoop {
                 .await;
             }
 
+            // Track consecutive failures of the same tool to detect infinite retry loops.
+            let all_failed_same_tool = !final_results.is_empty()
+                && final_results.iter().all(|r| !r.success)
+                && tool_calls.len() == 1;
+            if all_failed_same_tool {
+                let tool_name = &tool_calls[0].name;
+                if *tool_name == last_failed_tool {
+                    consecutive_tool_failures += 1;
+                } else {
+                    last_failed_tool = tool_name.clone();
+                    consecutive_tool_failures = 1;
+                }
+            } else {
+                consecutive_tool_failures = 0;
+                last_failed_tool.clear();
+            }
+
             for result in final_results {
                 self.messages.push(Message::tool(
                     result.call_id.clone(),
@@ -475,6 +518,18 @@ impl AgentLoop {
                     output: result,
                 })
                 .await;
+            }
+
+            if consecutive_tool_failures >= MAX_CONSECUTIVE_TOOL_FAILURES {
+                let msg = format!(
+                    "Tool `{}` failed {} times consecutively — stopping to avoid infinite loop.",
+                    last_failed_tool, consecutive_tool_failures
+                );
+                self.emit(AgentEvent::Error {
+                    message: msg.clone(),
+                })
+                .await;
+                break msg;
             }
         };
 
@@ -495,6 +550,10 @@ impl AgentLoop {
             .await;
         }
 
+        self.emit(AgentEvent::BusyStateChanged {
+            state: BusyState::Idle,
+        })
+        .await;
         Ok(final_text)
     }
 

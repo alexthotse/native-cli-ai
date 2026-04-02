@@ -76,9 +76,7 @@ Pre-built binaries for every release are available on the [Releases](https://git
 |---|---|
 | macOS (Apple Silicon) | `aarch64-apple-darwin` |
 | macOS (Intel) | `x86_64-apple-darwin` |
-| Linux (x86_64, glibc) | `x86_64-unknown-linux-gnu` |
-| Linux (x86_64, static) | `x86_64-unknown-linux-musl` |
-| Linux (ARM64) | `aarch64-unknown-linux-gnu` |
+| Linux (x86_64) | `x86_64-unknown-linux-gnu` |
 
 ### Build from source
 
@@ -273,6 +271,17 @@ The system prompt is layered in this order:
 
 The built-in tool surface includes filesystem editing, search, diffing, patching, shell execution, web access, `ask_question`, and `spawn_subagent`. MCP tools are loaded dynamically when configured, so the available tool set can grow with your environment.
 
+### Search And Edit Tools
+
+Recent search/edit improvements are aimed at making agent file work less brittle:
+
+- `search_code` now returns structured JSON match objects instead of raw `rg` text.
+- `search_code` treats ripgrep exit code `1` as a successful empty result, not a failure.
+- `search_code` supports `path`, `glob`, `fixed_strings`, `case_sensitive`, `word`, `context_before`, `context_after`, and `max_results`.
+- `query_symbols` is a literal Rust symbol lookup, not an implicit regex expansion of user input.
+- `edit_file` and `apply_patch` now fail loudly on ambiguous single-match edits instead of silently changing the first occurrence.
+- `replace_match` can edit a specific search result by exact `path`, `line`, and `column`, which makes search -> edit flows much safer.
+
 ## Crate Layout
 
 | Crate | Responsibility |
@@ -295,7 +304,22 @@ In practice, that means you can start small, branch out when a task gets bigger,
 
 ## Documentation
 
-The root README is the quick-start guide. Use the docs folder for deeper detail:
+Full user-facing documentation lives in [`docs/documentation/`](docs/documentation/index.md):
+
+| Page | Description |
+|---|---|
+| [Getting Started](docs/documentation/getting-started.md) | Installation, first run, and initial configuration |
+| [Commands](docs/documentation/commands.md) | Complete CLI command and flag reference |
+| [Interactive Mode](docs/documentation/interactive-mode.md) | TUI, REPL, slash commands, keyboard shortcuts |
+| [Configuration](docs/documentation/configuration.md) | Config files, TOML format, and environment variables |
+| [Providers](docs/documentation/providers.md) | LLM provider setup — MiniMax, Anthropic, OpenAI, OpenRouter |
+| [Tools](docs/documentation/tools.md) | All agent tools — file ops, search, shell, web, and more |
+| [Sessions](docs/documentation/sessions.md) | Session lifecycle, persistence, resume, and management |
+| [Permissions](docs/documentation/permissions.md) | Approval system, permission modes, and safe mode |
+| [Skills](docs/documentation/skills.md) | Skill discovery, installation, and authoring |
+| [Advanced](docs/documentation/advanced.md) | Sub-agents, MCP servers, hooks, orchestration, and IPC |
+
+Internal design docs:
 
 - [Product Requirements](docs/prd.md)
 - [Tech Stack](docs/tech-stack.md)

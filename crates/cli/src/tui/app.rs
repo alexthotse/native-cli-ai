@@ -24,7 +24,7 @@ use crossterm::{
     },
 };
 use nca_common::config::ProviderKind;
-use nca_common::event::QuestionSelection;
+use nca_common::event::{BusyState, QuestionSelection};
 use nca_core::approval::suggest_allow_pattern;
 use nca_core::skills::{SkillCatalog, SkillSource};
 use ratatui::{
@@ -113,6 +113,7 @@ mod theme {
     pub const BG: Color = Color::Rgb(22, 22, 28);
     pub const SURFACE: Color = Color::Rgb(32, 32, 42);
     pub const BORDER: Color = Color::Rgb(55, 55, 70);
+    pub const MENTION_BG: Color = Color::Rgb(48, 62, 94);
 
     pub const USER: Color = Color::Rgb(56, 189, 248);
     pub const ASSISTANT: Color = Color::Rgb(167, 139, 250);
@@ -205,6 +206,154 @@ fn apply_at_completion(buffer: &str, cursor_char_idx: usize, choice: &str) -> (S
     let new_byte = at_byte + 1 + choice.len();
     let new_char = new_buf[..new_byte.min(new_buf.len())].chars().count();
     (new_buf, new_char)
+}
+
+fn apply_selected_at_completion(
+    workspace_files: &[String],
+    buffer: &str,
+    cursor_char_idx: usize,
+    at_menu_index: usize,
+    append_space: bool,
+) -> Option<(String, usize)> {
+    let at_matches = at_completion_matches(workspace_files, buffer, cursor_char_idx);
+    if at_matches.is_empty() || !at_completion_active(buffer, cursor_char_idx) {
+        return None;
+    }
+
+    let pick = at_menu_index.min(at_matches.len().saturating_sub(1));
+    let choice = at_matches.get(pick)?;
+    let (mut new_buf, mut new_cursor_char_idx) =
+        apply_at_completion(buffer, cursor_char_idx, choice);
+
+    if append_space {
+        let insert_at = cursor_byte_index(&new_buf, new_cursor_char_idx);
+        new_buf.insert(insert_at, ' ');
+        new_cursor_char_idx += 1;
+    }
+
+    Some((new_buf, new_cursor_char_idx))
+}
+
+fn at_mention_char_ranges(buffer: &str) -> Vec<(usize, usize)> {
+    file_mentions::parse_at_mentions(buffer)
+        .into_iter()
+        .map(|(start, end, _)| {
+            let start_char = buffer[..start].chars().count();
+            let end_char = buffer[..end].chars().count();
+            (start_char, end_char)
+        })
+        .collect()
+}
+
+fn completed_at_mention_range_before_cursor(
+    buffer: &str,
+    cursor_char_idx: usize,
+) -> Option<(usize, usize)> {
+    let chars: Vec<char> = buffer.chars().collect();
+    for (start_char, end_char) in at_mention_char_ranges(buffer) {
+        if end_char == cursor_char_idx {
+            return Some((start_char, end_char));
+        }
+        if end_char < chars.len()
+            && end_char + 1 == cursor_char_idx
+            && chars.get(end_char) == Some(&' ')
+        {
+            return Some((start_char, end_char + 1));
+        }
+    }
+    None
+}
+
+fn remove_char_range(buffer: &str, start_char_idx: usize, end_char_idx: usize) -> String {
+    let mut chars: Vec<char> = buffer.chars().collect();
+    chars.drain(start_char_idx..end_char_idx);
+    chars.into_iter().collect()
+}
+
+fn delete_completed_at_mention(buffer: &str, cursor_char_idx: usize) -> Option<(String, usize)> {
+    let (start_char, end_char) = completed_at_mention_range_before_cursor(buffer, cursor_char_idx)?;
+    Some((remove_char_range(buffer, start_char, end_char), start_char))
+}
+
+fn push_styled_run(
+    spans: &mut Vec<Span<'static>>,
+    text: &mut String,
+    current_style: &mut Option<Style>,
+    style: Style,
+    ch: char,
+) {
+    if current_style.as_ref() != Some(&style) && !text.is_empty() {
+        spans.push(Span::styled(
+            std::mem::take(text),
+            current_style.unwrap_or_default(),
+        ));
+    }
+    *current_style = Some(style);
+    text.push(ch);
+}
+
+fn composer_line(buffer: &str, cursor_char_idx: usize) -> Line<'static> {
+    let prompt = Span::styled("❯ ", Style::default().fg(theme::USER).bold());
+    let chars: Vec<char> = buffer.chars().collect();
+    let mention_ranges = at_mention_char_ranges(buffer);
+    let cursor_char_idx = cursor_char_idx.min(chars.len());
+    let mut spans = vec![prompt];
+    let mut run = String::new();
+    let mut run_style: Option<Style> = None;
+
+    for idx in 0..=chars.len() {
+        if idx == cursor_char_idx {
+            let cursor_char = chars.get(idx).copied().unwrap_or(' ');
+            let in_mention = idx < chars.len()
+                && mention_ranges
+                    .iter()
+                    .any(|(start, end)| *start <= idx && idx < *end);
+            let cursor_style = if in_mention {
+                Style::default()
+                    .bg(theme::USER)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .bg(theme::MUTED)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            };
+            push_styled_run(
+                &mut spans,
+                &mut run,
+                &mut run_style,
+                cursor_style,
+                cursor_char,
+            );
+            if idx == chars.len() {
+                break;
+            }
+            continue;
+        }
+
+        let Some(ch) = chars.get(idx).copied() else {
+            break;
+        };
+        let in_mention = mention_ranges
+            .iter()
+            .any(|(start, end)| *start <= idx && idx < *end);
+        let style = if in_mention {
+            Style::default()
+                .fg(theme::TEXT)
+                .bg(theme::MENTION_BG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::TEXT)
+        };
+        push_styled_run(&mut spans, &mut run, &mut run_style, style, ch);
+    }
+
+    if !run.is_empty() {
+        spans.push(Span::styled(run, run_style.unwrap_or_default()));
+    }
+
+    Line::from(spans)
 }
 
 /// Entry for the slash panel: either a hardcoded command or a discovered skill.
@@ -604,6 +753,13 @@ fn toolbar_permission_is_bypass(mode: &str) -> bool {
     mode.contains("BypassPermissions")
 }
 
+fn escape_cancels_active_turn(state: &TuiSessionState) -> bool {
+    matches!(
+        state.current_busy_state,
+        BusyState::Thinking | BusyState::Streaming | BusyState::ToolRunning
+    )
+}
+
 fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
     col >= r.x
         && col < r.x.saturating_add(r.width)
@@ -852,58 +1008,61 @@ fn transcript_lines_and_hits(
                         None,
                     );
                 }
-                push_transcript_line(
-                    &mut lines,
-                    &mut hits,
-                    Line::from(vec![
-                        Span::styled(
-                            format!("  [0] suggested: {} ", q.suggested_answer),
-                            Style::default()
-                                .fg(theme::SUCCESS)
-                                .add_modifier(Modifier::UNDERLINED),
-                        ),
-                        Span::styled("(click)", Style::default().fg(theme::MUTED)),
-                    ]),
-                    Some(QuestionSelection::Suggested),
-                );
-                for (i, o) in q.options.iter().enumerate() {
+                // When the modal is open, skip inline options — the popup handles selection.
+                if !state.question_modal_open {
                     push_transcript_line(
                         &mut lines,
                         &mut hits,
                         Line::from(vec![
                             Span::styled(
-                                format!("  [{}] ({}) {} ", i + 1, o.id, o.label),
+                                format!("  [0] suggested: {} ", q.suggested_answer),
                                 Style::default()
-                                    .fg(theme::TEXT)
+                                    .fg(theme::SUCCESS)
                                     .add_modifier(Modifier::UNDERLINED),
                             ),
                             Span::styled("(click)", Style::default().fg(theme::MUTED)),
                         ]),
-                        Some(QuestionSelection::Option {
-                            option_id: o.id.clone(),
-                        }),
+                        Some(QuestionSelection::Suggested),
                     );
-                }
-                if q.allow_custom {
+                    for (i, o) in q.options.iter().enumerate() {
+                        push_transcript_line(
+                            &mut lines,
+                            &mut hits,
+                            Line::from(vec![
+                                Span::styled(
+                                    format!("  [{}] ({}) {} ", i + 1, o.id, o.label),
+                                    Style::default()
+                                        .fg(theme::TEXT)
+                                        .add_modifier(Modifier::UNDERLINED),
+                                ),
+                                Span::styled("(click)", Style::default().fg(theme::MUTED)),
+                            ]),
+                            Some(QuestionSelection::Option {
+                                option_id: o.id.clone(),
+                            }),
+                        );
+                    }
+                    if q.allow_custom {
+                        push_transcript_line(
+                            &mut lines,
+                            &mut hits,
+                            Line::from(Span::styled(
+                                "  [c] type your own answer below, then Enter",
+                                Style::default().fg(theme::MUTED),
+                            )),
+                            None,
+                        );
+                    }
                     push_transcript_line(
                         &mut lines,
                         &mut hits,
                         Line::from(Span::styled(
-                            "  [c] type your own answer below, then Enter",
+                            "  Tip: /auto-answer or Enter on empty = suggested · click an option above",
                             Style::default().fg(theme::MUTED),
                         )),
                         None,
                     );
                 }
-                push_transcript_line(
-                    &mut lines,
-                    &mut hits,
-                    Line::from(Span::styled(
-                        "  Tip: /auto-answer or Enter on empty = suggested · click an option above",
-                        Style::default().fg(theme::MUTED),
-                    )),
-                    None,
-                );
                 push_transcript_line(&mut lines, &mut hits, Line::default(), None);
             }
             DisplayBlock::ErrorLine(s) => {
@@ -1219,6 +1378,7 @@ pub fn run_blocking(
     question_answer_tx: Option<UnboundedSender<(String, QuestionSelection)>>,
     approval_answer_tx: Option<UnboundedSender<ApprovalAnswer>>,
     show_run_banner: bool,
+    cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> anyhow::Result<()> {
     let mut terminal = setup_terminal()?;
 
@@ -1403,6 +1563,12 @@ pub fn run_blocking(
                                     Style::default().fg(theme::MUTED),
                                 )));
                             }
+                            if let Some(ref skill_name) = row.skill {
+                                todo_lines.push(Line::from(Span::styled(
+                                    format!("  [{}]", sidebar_fit(skill_name, 24)),
+                                    Style::default().fg(theme::WARN),
+                                )));
+                            }
                             if !row.task.is_empty() && row.task != "(sub-agent)" {
                                 todo_lines.push(Line::from(Span::styled(
                                     format!("  {}", sidebar_fit(&row.task, 26)),
@@ -1446,11 +1612,13 @@ pub fn run_blocking(
                 }
 
                 let elapsed = g.started.elapsed().as_secs();
-                let busy = if g.busy {
-                    Span::styled(" ● busy ", Style::default().fg(theme::WARN))
-                } else {
-                    Span::styled(" ○ idle ", Style::default().fg(theme::SUCCESS))
-                };
+                let indicator_text = crate::tui::busy_indicator::render_indicator(
+                    g.current_busy_state,
+                    g.busy_state_since,
+                );
+                let indicator_color =
+                    crate::tui::busy_indicator::color_for_state(g.current_busy_state);
+                let busy = Span::styled(indicator_text, Style::default().fg(indicator_color));
                 let approval_hint = if g.active_approval.is_some() {
                     Span::styled(" !approve ", Style::default().fg(theme::ERROR))
                 } else {
@@ -1481,6 +1649,28 @@ pub fn run_blocking(
                     Style::default().fg(theme::MUTED),
                 );
 
+                let cancel_hint_text = " Esc cancel ";
+                let cancel_hint = escape_cancels_active_turn(&g).then(|| {
+                    Span::styled(
+                        cancel_hint_text,
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(theme::WARN)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                });
+                let status_rect = if cancel_hint.is_some() && st_r.width > cancel_hint_text.len() as u16 {
+                    Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([
+                            Constraint::Min(0),
+                            Constraint::Length(cancel_hint_text.len() as u16),
+                        ])
+                        .split(st_r)[0]
+                } else {
+                    st_r
+                };
+
                 // Compute the character-cell x-offset before any borrow of `g` escapes into `status_spans`.
                 let branch_char_offset = 4 + g.model.len() + 4 + g.agent_profile.len() + 4;
                 let branch_text = if g.current_branch.is_empty() {
@@ -1493,12 +1683,12 @@ pub fn run_blocking(
                     .add_modifier(Modifier::UNDERLINED);
 
                 // Store the branch chip bounds for click hit-testing.
-                if st_r.width > branch_char_offset as u16 && !branch_text.is_empty() {
+                if status_rect.width > branch_char_offset as u16 && !branch_text.is_empty() {
                     let chip_len = branch_text.len() as u16;
                     g.branch_chip_bounds = Some(Rect::new(
-                        st_r.x + branch_char_offset as u16,
-                        st_r.y,
-                        chip_len.min(st_r.width - branch_char_offset as u16),
+                        status_rect.x + branch_char_offset as u16,
+                        status_rect.y,
+                        chip_len.min(status_rect.width - branch_char_offset as u16),
                         1,
                     ));
                 } else {
@@ -1548,7 +1738,21 @@ pub fn run_blocking(
                 status_spans.push(time_span);
                 let status = Line::from(status_spans);
                 let bar = Paragraph::new(status).style(Style::default().bg(theme::SURFACE));
-                frame.render_widget(bar, st_r);
+                frame.render_widget(bar, status_rect);
+                if let Some(cancel_hint) = cancel_hint {
+                    let hint_width = cancel_hint_text.len() as u16;
+                    if st_r.width > hint_width {
+                        let hint_rect = Rect::new(
+                            st_r.x + st_r.width.saturating_sub(hint_width),
+                            st_r.y,
+                            hint_width,
+                            1,
+                        );
+                        let hint_bar = Paragraph::new(Line::from(cancel_hint))
+                            .style(Style::default().bg(theme::SURFACE));
+                        frame.render_widget(hint_bar, hint_rect);
+                    }
+                }
 
                 if let Some(sr) = slash_opt {
                     if slash_panel_visible(&g.input_buffer) && !slash_filtered.is_empty() {
@@ -1616,7 +1820,8 @@ pub fn run_blocking(
                             } else {
                                 Style::default().fg(theme::TEXT)
                             };
-                            lines.push(Line::from(Span::styled(format!(" @{path}"), st)));
+                            // Show path without @ prefix since @ is already in the buffer
+                            lines.push(Line::from(Span::styled(format!(" {path}"), st)));
                         }
                         if at_matches.len() > n_show {
                             lines.push(Line::from(Span::styled(
@@ -1639,42 +1844,21 @@ pub fn run_blocking(
                     }
                 }
 
-                let prompt = Span::styled("❯ ", Style::default().fg(theme::USER).bold());
-                let before: String = g.input_buffer.chars().take(g.cursor_char_idx).collect();
-                let after: String = g.input_buffer.chars().skip(g.cursor_char_idx).collect();
-                let input_line = Line::from(vec![
-                    prompt,
-                    Span::styled(before, Style::default().fg(theme::TEXT)),
-                    Span::styled(
-                        if after.is_empty() {
-                            " ".into()
-                        } else {
-                            after.chars().next().map(|c| c.to_string()).unwrap_or_default()
-                        },
-                        Style::default()
-                            .bg(theme::MUTED)
-                            .fg(Color::Black)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        after.chars().skip(1).collect::<String>(),
-                        Style::default().fg(theme::TEXT),
-                    ),
-                ]);
+                let input_line = composer_line(&g.input_buffer, g.cursor_char_idx);
 
                 let hint = if g.active_approval.is_some() {
                     Line::from(Span::styled(
                         "Approval: y/n · Ctrl+Y approve · Ctrl+N deny · Ctrl+U always allow · /approve · /deny · other /commands still work",
                         Style::default().fg(theme::ERROR),
                     ))
-                } else if g.active_question.is_some() {
+                } else if g.active_question.is_some() && !g.question_modal_open {
                     Line::from(Span::styled(
                         "Enter / 0 = suggested · 1–n = option · click underlined line · /auto-answer · End = transcript bottom (empty input)",
                         Style::default().fg(theme::WARN),
                     ))
                 } else if g.input_buffer.is_empty() {
                     Line::from(Span::styled(
-                        "Enter send · Tab agent · Ctrl+V image · /image · Ctrl+P palette · Esc exit · Ctrl+L clear",
+                        "Enter send · Tab agent · Ctrl+V image · /image · Ctrl+P palette · Ctrl+Q exit · Ctrl+L clear",
                         Style::default().fg(theme::MUTED),
                     ))
                 } else {
@@ -2002,6 +2186,113 @@ pub fn run_blocking(
                         .style(Style::default().bg(theme::SURFACE))
                         .wrap(Wrap { trim: false });
                     frame.render_widget(popup, popup_area);
+                }
+
+                // Question modal popup (arrow-key option picker).
+                if g.question_modal_open
+                    && let Some(ref q) = g.active_question
+                {
+                        let has_chat_option = q.allow_custom;
+                        let total_items = 1 + q.options.len() + if has_chat_option { 1 } else { 0 };
+                        // +4 for: title line, blank, blank before footer, footer
+                        let rows = (total_items as u16).saturating_add(6).max(8);
+                        let popup_w = 60u16.min(area.width.saturating_sub(4));
+                        let popup_area = centered_rect(area, popup_w, rows);
+
+                        let mut lines: Vec<Line> = vec![
+                            Line::from(Span::styled(
+                                format!(" {} ", q.prompt),
+                                Style::default()
+                                    .fg(theme::ASSISTANT)
+                                    .add_modifier(Modifier::BOLD),
+                            )),
+                            Line::default(),
+                        ];
+
+                        // Suggested answer (index 0)
+                        let suggested_label = format!(" Suggested: {} ", q.suggested_answer);
+                        if g.question_modal_index == 0 {
+                            lines.push(Line::from(Span::styled(
+                                format!(" ► {}", suggested_label.trim()),
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(theme::USER)
+                                    .add_modifier(Modifier::BOLD),
+                            )));
+                        } else {
+                            lines.push(Line::from(Span::styled(
+                                format!("   {}", suggested_label.trim()),
+                                Style::default().fg(theme::TEXT),
+                            )));
+                        }
+
+                        // Options (index 1..n)
+                        for (i, o) in q.options.iter().enumerate() {
+                            let item_idx = i + 1;
+                            let label = format!("{} ", o.label);
+                            if g.question_modal_index == item_idx {
+                                lines.push(Line::from(Span::styled(
+                                    format!(" ► {}", label.trim()),
+                                    Style::default()
+                                        .fg(Color::Black)
+                                        .bg(theme::USER)
+                                        .add_modifier(Modifier::BOLD),
+                                )));
+                            } else {
+                                lines.push(Line::from(Span::styled(
+                                    format!("   {}", label.trim()),
+                                    Style::default().fg(theme::TEXT),
+                                )));
+                            }
+                        }
+
+                        // "Chat about this" (last item, only if allow_custom)
+                        if has_chat_option {
+                            let chat_idx = 1 + q.options.len();
+                            if g.question_modal_index == chat_idx {
+                                lines.push(Line::from(Span::styled(
+                                    " ► Chat about this",
+                                    Style::default()
+                                        .fg(Color::Black)
+                                        .bg(theme::USER)
+                                        .add_modifier(Modifier::BOLD),
+                                )));
+                            } else {
+                                lines.push(Line::from(Span::styled(
+                                    "   Chat about this",
+                                    Style::default()
+                                        .fg(theme::MUTED)
+                                        .add_modifier(Modifier::ITALIC),
+                                )));
+                            }
+                        }
+
+                        // Footer
+                        lines.push(Line::default());
+                        let footer_text = if has_chat_option {
+                            " ↑↓ select · Enter confirm · Esc chat "
+                        } else {
+                            " ↑↓ select · Enter confirm "
+                        };
+                        lines.push(Line::from(Span::styled(
+                            footer_text,
+                            Style::default().fg(theme::MUTED),
+                        )));
+
+                        frame.render_widget(ClearWidget, popup_area);
+                        let popup = Paragraph::new(Text::from(lines))
+                            .block(
+                                Block::default()
+                                    .borders(Borders::ALL)
+                                    .border_style(Style::default().fg(theme::BORDER))
+                                    .title(Span::styled(
+                                        " question ",
+                                        Style::default().fg(theme::WARN),
+                                    )),
+                            )
+                            .style(Style::default().bg(theme::SURFACE))
+                            .wrap(Wrap { trim: false });
+                        frame.render_widget(popup, popup_area);
                 }
 
                 if g.session_picker_open {
@@ -2466,6 +2757,7 @@ pub fn run_blocking(
                 Event::Mouse(_) if g.permission_picker_open => continue,
                 Event::Mouse(_) if g.agent_picker_open => continue,
                 Event::Mouse(_) if g.session_picker_open => continue,
+                Event::Mouse(_) if g.question_modal_open => continue,
                 Event::Mouse(m) => {
                     let sz = terminal.size()?;
                     let area = Rect::new(0, 0, sz.width, sz.height);
@@ -2929,6 +3221,63 @@ pub fn run_blocking(
                         continue;
                     }
 
+                    // Question modal keyboard handling.
+                    if g.question_modal_open {
+                        if let Some(ref q) = g.active_question.clone() {
+                            // Total items: 1 (suggested) + options.len() + (1 if allow_custom for "Chat about this")
+                            let total = 1 + q.options.len() + if q.allow_custom { 1 } else { 0 };
+                            match (key.code, key.modifiers) {
+                                (KeyCode::Esc, _) => {
+                                    if q.allow_custom {
+                                        // Fall back to inline text input
+                                        g.close_question_modal();
+                                    }
+                                    // If !allow_custom, Esc is a no-op
+                                }
+                                (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                                    g.question_modal_index =
+                                        g.question_modal_index.saturating_sub(1);
+                                }
+                                (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                                    g.question_modal_index =
+                                        (g.question_modal_index + 1).min(total - 1);
+                                }
+                                (KeyCode::Enter, _) => {
+                                    let idx = g.question_modal_index;
+                                    let sel = if idx == 0 {
+                                        // Suggested answer
+                                        Some(QuestionSelection::Suggested)
+                                    } else if idx <= q.options.len() {
+                                        // Regular option (1-based → 0-based)
+                                        Some(QuestionSelection::Option {
+                                            option_id: q.options[idx - 1].id.clone(),
+                                        })
+                                    } else {
+                                        // "Chat about this" — fall back to inline text input
+                                        None
+                                    };
+
+                                    if let Some(sel) = sel {
+                                        let qid = q.question_id.clone();
+                                        g.close_question_modal();
+                                        g.active_question = None;
+                                        drop(g);
+                                        if let Some(ref tx) = question_answer_tx {
+                                            let _ = tx.send((qid, sel));
+                                        } else {
+                                            let _ = cmd_tx.send(TuiCmd::QuestionAnswer(sel));
+                                        }
+                                    } else {
+                                        // "Chat about this" — close modal, keep active_question
+                                        g.close_question_modal();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        continue;
+                    }
+
                     // Permission picker keyboard handling.
                     if g.permission_picker_open {
                         const PERM_COUNT: usize = 5;
@@ -3083,12 +3432,23 @@ pub fn run_blocking(
                     }
 
                     match (key.code, key.modifiers) {
-                        (KeyCode::Esc, _) => {
+                        (KeyCode::Esc, _) if escape_cancels_active_turn(&g) => {
+                            if let Some(ref flag) = cancel_flag {
+                                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            g.blocks
+                                .push(DisplayBlock::System("Cancelling current run...".into()));
+                            let _ = cmd_tx.send(TuiCmd::CancelTurn);
+                        }
+                        (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
                             g.should_exit = true;
                             let _ = cmd_tx.send(TuiCmd::Exit);
                             break;
                         }
                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            if let Some(ref flag) = cancel_flag {
+                                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
                             let _ = cmd_tx.send(TuiCmd::CancelTurn);
                         }
                         (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
@@ -3123,22 +3483,15 @@ pub fn run_blocking(
                             }
                         }
                         (KeyCode::Tab, _) => {
-                            let at_matches = at_completion_matches(
+                            if let Some((buf, cidx)) = apply_selected_at_completion(
                                 &workspace_files,
                                 &g.input_buffer,
                                 g.cursor_char_idx,
-                            );
-                            if !at_matches.is_empty()
-                                && at_completion_active(&g.input_buffer, g.cursor_char_idx)
-                            {
-                                let pick = g.at_menu_index.min(at_matches.len() - 1);
-                                if let Some(choice) = at_matches.get(pick) {
-                                    let cur = g.cursor_char_idx;
-                                    let (buf, cidx) =
-                                        apply_at_completion(&g.input_buffer, cur, choice);
-                                    g.input_buffer = buf;
-                                    g.cursor_char_idx = cidx;
-                                }
+                                g.at_menu_index,
+                                false,
+                            ) {
+                                g.input_buffer = buf;
+                                g.cursor_char_idx = cidx;
                             } else {
                                 let slash_filtered =
                                     filter_slash_entries(&slash_entries, &g.input_buffer);
@@ -3212,6 +3565,17 @@ pub fn run_blocking(
                             }
                         }
                         (KeyCode::Enter, _) => {
+                            if let Some((buf, cidx)) = apply_selected_at_completion(
+                                &workspace_files,
+                                &g.input_buffer,
+                                g.cursor_char_idx,
+                                g.at_menu_index,
+                                true,
+                            ) {
+                                g.input_buffer = buf;
+                                g.cursor_char_idx = cidx;
+                                continue;
+                            }
                             let line = std::mem::take(&mut g.input_buffer);
                             g.cursor_char_idx = 0;
                             g.slash_menu_index = 0;
@@ -3413,11 +3777,18 @@ pub fn run_blocking(
                         }
                         (KeyCode::Backspace, _) => {
                             if g.cursor_char_idx > 0 {
-                                let idx = g.cursor_char_idx;
-                                let mut cs: Vec<char> = g.input_buffer.chars().collect();
-                                cs.remove(idx - 1);
-                                g.input_buffer = cs.into_iter().collect();
-                                g.cursor_char_idx -= 1;
+                                if let Some((buf, cidx)) =
+                                    delete_completed_at_mention(&g.input_buffer, g.cursor_char_idx)
+                                {
+                                    g.input_buffer = buf;
+                                    g.cursor_char_idx = cidx;
+                                } else {
+                                    let idx = g.cursor_char_idx;
+                                    let mut cs: Vec<char> = g.input_buffer.chars().collect();
+                                    cs.remove(idx - 1);
+                                    g.input_buffer = cs.into_iter().collect();
+                                    g.cursor_char_idx -= 1;
+                                }
                                 if slash_panel_visible(&g.input_buffer) {
                                     let f = filter_slash_entries(&slash_entries, &g.input_buffer);
                                     if !f.is_empty() {
@@ -3459,8 +3830,13 @@ pub fn run_blocking(
 #[cfg(test)]
 mod approval_parse_tests {
     use super::{
-        TuiCmd, branch_picker_enter_command, filtered_branch_indices, parse_approval_verdict,
+        TuiCmd, apply_selected_at_completion, branch_picker_enter_command,
+        completed_at_mention_range_before_cursor, composer_line, delete_completed_at_mention,
+        escape_cancels_active_turn, filtered_branch_indices, parse_approval_verdict,
     };
+    use crate::tui::state::TuiSessionState;
+    use nca_common::event::BusyState;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_yes_with_punctuation_and_synonyms() {
@@ -3517,5 +3893,82 @@ mod approval_parse_tests {
         let branches = vec!["alpha".into(), "main".into(), "main-fix".into()];
         let cmd = branch_picker_enter_command(&branches, "mai", 1);
         assert!(matches!(cmd, Some(TuiCmd::SwitchBranch(name)) if name == "main-fix"));
+    }
+
+    #[test]
+    fn enter_accepts_selected_at_mention_without_submitting() {
+        let workspace_files = vec![
+            "crates/cli/src/file_mentions.rs".into(),
+            "crates/cli/src/tui/app.rs".into(),
+        ];
+        let buffer = "check @crates/cli/src/t";
+        let cursor_char_idx = buffer.chars().count();
+
+        let (next_buffer, next_cursor_char_idx) =
+            apply_selected_at_completion(&workspace_files, buffer, cursor_char_idx, 0, true)
+                .expect("active mention should be selectable");
+
+        assert_eq!(next_buffer, "check @crates/cli/src/tui/app.rs ");
+        assert_eq!(next_cursor_char_idx, next_buffer.chars().count());
+    }
+
+    #[test]
+    fn backspace_deletes_completed_at_mention_and_space() {
+        let buffer = "check @crates/cli/src/tui/app.rs ";
+        let cursor_char_idx = buffer.chars().count();
+
+        let (next_buffer, next_cursor_char_idx) =
+            delete_completed_at_mention(buffer, cursor_char_idx)
+                .expect("completed mention should delete as one token");
+
+        assert_eq!(next_buffer, "check ");
+        assert_eq!(next_cursor_char_idx, "check ".chars().count());
+    }
+
+    #[test]
+    fn mention_range_includes_inserted_trailing_space() {
+        let buffer = "check @crates/cli/src/tui/app.rs ";
+        let cursor_char_idx = buffer.chars().count();
+
+        assert_eq!(
+            completed_at_mention_range_before_cursor(buffer, cursor_char_idx),
+            Some((6, buffer.chars().count()))
+        );
+    }
+
+    #[test]
+    fn composer_line_styles_completed_mentions() {
+        let line = composer_line("see @README.md ", 15);
+        let mention_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("@README.md"))
+            .expect("mention span should exist");
+
+        assert_eq!(mention_span.style.bg, Some(super::theme::MENTION_BG));
+    }
+
+    #[test]
+    fn escape_only_cancels_active_turn_states() {
+        let mut state = TuiSessionState::new(
+            "session".into(),
+            "model".into(),
+            "@build".into(),
+            "AcceptEdits".into(),
+            PathBuf::from("."),
+        );
+        assert!(!escape_cancels_active_turn(&state));
+
+        state.set_busy_state(BusyState::Thinking);
+        assert!(escape_cancels_active_turn(&state));
+
+        state.set_busy_state(BusyState::Streaming);
+        assert!(escape_cancels_active_turn(&state));
+
+        state.set_busy_state(BusyState::ToolRunning);
+        assert!(escape_cancels_active_turn(&state));
+
+        state.set_busy_state(BusyState::ApprovalPending);
+        assert!(!escape_cancels_active_turn(&state));
     }
 }

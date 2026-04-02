@@ -1,7 +1,7 @@
 //! Transcript + status driven by `AgentEvent`.
 
 use nca_common::config::ProviderKind;
-use nca_common::event::{AgentEvent, InteractiveQuestionPayload};
+use nca_common::event::{AgentEvent, BusyState, InteractiveQuestionPayload};
 use nca_common::message::ImageAttachment;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -48,6 +48,7 @@ pub struct SubagentRow {
     pub phase: String,
     pub detail: String,
     pub running: bool,
+    pub skill: Option<String>,
 }
 
 /// Status of an API key validation during onboarding.
@@ -85,6 +86,10 @@ pub struct TuiSessionState {
     pub cost_usd: f64,
     pub started: Instant,
     pub busy: bool,
+    /// Current busy state (for animated indicator).
+    pub current_busy_state: BusyState,
+    /// When the current busy state started (for animation frame selection).
+    pub busy_state_since: Instant,
     pub should_exit: bool,
     /// Selected row in slash-command popup (↑↓ or click).
     pub slash_menu_index: usize,
@@ -151,6 +156,10 @@ pub struct TuiSessionState {
     /// Agent profile picker popup.
     pub agent_picker_open: bool,
     pub agent_picker_index: usize,
+    /// Question modal popup (arrow-key option picker).
+    pub question_modal_open: bool,
+    pub question_modal_index: usize,
+    pub question_modal_scroll: usize,
     /// Command palette selection index (separate from slash_menu_index).
     pub palette_index: usize,
     /// Session picker popup (interactive list with resume).
@@ -208,6 +217,8 @@ impl TuiSessionState {
             cost_usd: 0.0,
             started: Instant::now(),
             busy: false,
+            current_busy_state: BusyState::Idle,
+            busy_state_since: Instant::now(),
             should_exit: false,
             slash_menu_index: 0,
             command_palette_open: false,
@@ -248,6 +259,9 @@ impl TuiSessionState {
             permission_picker_index: 0,
             agent_picker_open: false,
             agent_picker_index: 0,
+            question_modal_open: false,
+            question_modal_index: 0,
+            question_modal_scroll: 0,
             palette_index: 0,
             session_picker_open: false,
             session_picker_search: String::new(),
@@ -346,6 +360,18 @@ impl TuiSessionState {
         self.agent_picker_index = 0;
     }
 
+    pub fn open_question_modal(&mut self) {
+        self.question_modal_open = true;
+        self.question_modal_index = 0;
+        self.question_modal_scroll = 0;
+    }
+
+    pub fn close_question_modal(&mut self) {
+        self.question_modal_open = false;
+        self.question_modal_index = 0;
+        self.question_modal_scroll = 0;
+    }
+
     pub fn open_session_picker(&mut self, entries: Vec<String>, current: &str) {
         self.session_picker_open = true;
         self.session_picker_search.clear();
@@ -380,6 +406,13 @@ impl TuiSessionState {
         self.busy = busy;
     }
 
+    pub fn set_busy_state(&mut self, state: BusyState) {
+        if self.current_busy_state != state {
+            self.current_busy_state = state;
+            self.busy_state_since = Instant::now();
+        }
+    }
+
     pub fn push_error(&mut self, msg: String) {
         self.blocks.push(DisplayBlock::ErrorLine(msg));
     }
@@ -390,6 +423,7 @@ impl TuiSessionState {
     pub fn clear_replayed_interaction_state(&mut self) {
         self.active_approval = None;
         self.active_question = None;
+        self.close_question_modal();
     }
 
     pub fn clear_active_approval_if_matches(&mut self, call_id: &str) {
@@ -456,15 +490,18 @@ impl TuiSessionState {
                 if role == "user" {
                     self.streaming_assistant = None;
                     self.blocks.push(DisplayBlock::User(content.clone()));
+                    self.set_busy_state(BusyState::Thinking);
                 } else if role == "assistant" {
                     self.streaming_assistant = None;
                     self.blocks.push(DisplayBlock::Assistant(content.clone()));
+                    self.set_busy_state(BusyState::Idle);
                 }
             }
             AgentEvent::TokensStreamed { delta } => {
                 self.streaming_assistant
                     .get_or_insert_with(String::new)
                     .push_str(delta);
+                self.set_busy_state(BusyState::Streaming);
             }
             AgentEvent::ToolCallStarted {
                 call_id,
@@ -477,6 +514,7 @@ impl TuiSessionState {
                     call_id: call_id.clone(),
                     input: format_tool_input_for_display(tool, input),
                 });
+                self.set_busy_state(BusyState::ToolRunning);
             }
             AgentEvent::ToolCallCompleted { call_id, output } => {
                 let ok = output.success;
@@ -484,6 +522,7 @@ impl TuiSessionState {
                     .active_approval
                     .take()
                     .filter(|req| req.call_id != *call_id);
+                self.set_busy_state(BusyState::Thinking);
                 let detail = if ok {
                     truncate(&output.output, 120)
                 } else {
@@ -532,6 +571,7 @@ impl TuiSessionState {
                     input,
                 };
                 self.active_approval = Some(req.clone());
+                self.set_busy_state(BusyState::ApprovalPending);
                 if let Some(idx) = self.blocks.iter().rposition(
                     |b| matches!(b, DisplayBlock::ToolRunning { call_id: id, .. } if id == call_id),
                 ) {
@@ -569,12 +609,14 @@ impl TuiSessionState {
                 self.blocks.push(DisplayBlock::Question(question.clone()));
                 // Bring the prompt into view when follow-tail is on (default).
                 self.transcript_follow_tail = true;
+                self.open_question_modal();
             }
             AgentEvent::QuestionResolved {
                 question_id,
                 selection,
             } => {
                 self.active_question = None;
+                self.close_question_modal();
                 self.blocks.push(DisplayBlock::System(format!(
                     "Answered question {question_id}: {selection:?}"
                 )));
@@ -590,6 +632,11 @@ impl TuiSessionState {
             }
             AgentEvent::Error { message } => {
                 self.blocks.push(DisplayBlock::ErrorLine(message.clone()));
+                if message.to_ascii_lowercase().contains("run cancelled") {
+                    self.set_busy_state(BusyState::Idle);
+                } else {
+                    self.set_busy_state(BusyState::Error);
+                }
             }
             AgentEvent::Checkpoint { .. } => {}
             AgentEvent::ChildSessionSpawned {
@@ -613,6 +660,7 @@ impl TuiSessionState {
                         phase: String::new(),
                         detail: String::new(),
                         running: true,
+                        skill: None,
                     });
                 }
                 self.blocks.push(DisplayBlock::System(format!(
@@ -635,6 +683,9 @@ impl TuiSessionState {
                     row.phase = phase.clone();
                     row.detail = d.clone();
                     row.running = true;
+                    if phase == "skill" || phase == "invoke_skill" {
+                        row.skill = Some(detail.clone());
+                    }
                 } else {
                     self.subagents.push(SubagentRow {
                         id: child_session_id.clone(),
@@ -642,6 +693,11 @@ impl TuiSessionState {
                         phase: phase.clone(),
                         detail: d.clone(),
                         running: true,
+                        skill: if phase == "skill" || phase == "invoke_skill" {
+                            Some(detail.clone())
+                        } else {
+                            None
+                        },
                     });
                 }
                 self.blocks
@@ -665,6 +721,9 @@ impl TuiSessionState {
                 self.blocks.push(DisplayBlock::System(format!(
                     "Sub-agent {short}… done: {status}"
                 )));
+            }
+            AgentEvent::BusyStateChanged { state } => {
+                self.set_busy_state(*state);
             }
             _ => {}
         }
@@ -851,5 +910,77 @@ mod tests {
 
         assert!(st.active_approval.is_none());
         assert!(st.active_question.is_none());
+    }
+
+    #[test]
+    fn open_close_question_modal() {
+        let mut st = TuiSessionState::new(
+            "s".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+            PathBuf::from("/tmp"),
+        );
+        assert!(!st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
+
+        st.open_question_modal();
+        assert!(st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
+        assert_eq!(st.question_modal_scroll, 0);
+
+        st.question_modal_index = 3;
+        st.close_question_modal();
+        assert!(!st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
+        assert_eq!(st.question_modal_scroll, 0);
+    }
+
+    #[test]
+    fn question_requested_opens_modal() {
+        let mut st = TuiSessionState::new(
+            "s".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+            PathBuf::from("/tmp"),
+        );
+        let q = InteractiveQuestionPayload {
+            question_id: "q-1".into(),
+            call_id: "c1".into(),
+            prompt: "Pick".into(),
+            options: vec![QuestionOption {
+                id: "a".into(),
+                label: "A".into(),
+            }],
+            allow_custom: true,
+            suggested_answer: "A".into(),
+        };
+        st.apply_event(&AgentEvent::QuestionRequested {
+            question: q.clone(),
+        });
+        assert!(st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
+        assert!(st.active_question.is_some());
+    }
+
+    #[test]
+    fn question_resolved_closes_modal() {
+        let mut st = TuiSessionState::new(
+            "s".into(),
+            "m".into(),
+            "@build".into(),
+            "default".into(),
+            PathBuf::from("/tmp"),
+        );
+        st.question_modal_open = true;
+        st.question_modal_index = 2;
+        st.apply_event(&AgentEvent::QuestionResolved {
+            question_id: "q-1".into(),
+            selection: QuestionSelection::Suggested,
+        });
+        assert!(st.active_question.is_none());
+        assert!(!st.question_modal_open);
+        assert_eq!(st.question_modal_index, 0);
     }
 }

@@ -4,17 +4,74 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
+    branches: [main]
 
+# Only run release jobs when:
+# - A PR is merged to main (from dev or any branch)
+# - A version tag is pushed (v*)
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   BINARY_NAME: nca
 
 jobs:
+  # Determine if this is a release-worthy push
+  should-release:
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.check.outputs.should_release }}
+    steps:
+      - name: Check release conditions
+        id: check
+        run: |
+          # Release on PR merge to main
+          if [[ "${{ github.event.pull_request.merged }}" == "true" ]]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "trigger=PR merge to main" >> "$GITHUB_OUTPUT"
+          # Release on tag push
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "trigger=Tag push" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "trigger=Non-release push" >> "$GITHUB_OUTPUT"
+          fi
+
+  # CI check (required before release)
+  ci-check:
+    needs: should-release
+    if: needs.should-release.outputs.value == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config ripgrep
+
+      - name: Check formatting
+        run: cargo fmt --check --all
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  # Multi-platform build
   build:
+    needs: [should-release, ci-check]
+    if: needs.should-release.outputs.value == 'true'
     strategy:
       matrix:
         include:
@@ -63,10 +120,11 @@ jobs:
           name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
           path: ${{ env.BINARY_NAME }}-${{ matrix.target }}.${{ matrix.archive }}
 
+  # Create GitHub Release (only on tags)
   release:
-    needs: build
+    needs: [should-release, build]
+    if: needs.should-release.outputs.value == 'true' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
 
@@ -83,10 +141,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Update install script (only on tags)
   update-install-script:
-    needs: release
+    needs: [should-release, release]
+    if: needs.should-release.outputs.value == 'true' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
 

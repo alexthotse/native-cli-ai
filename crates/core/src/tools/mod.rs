@@ -9,10 +9,12 @@ pub mod edit_file;
 pub mod fetch_url;
 pub mod filesystem;
 pub mod git;
+pub mod invoke_skill;
 pub mod list_directory;
 pub mod mcp;
 pub mod move_path;
 pub mod rename_path;
+pub mod replace_match;
 pub mod run_validation;
 pub mod search;
 pub mod spawn_subagent;
@@ -21,6 +23,7 @@ pub mod web_search;
 pub mod write_file;
 
 pub use ask_question::AskQuestionTool;
+pub use invoke_skill::InvokeSkillTool;
 
 use nca_common::config::WebConfig;
 use nca_common::tool::{ToolCall, ToolDefinition, ToolResult};
@@ -78,6 +81,9 @@ impl ToolRegistry {
             workspace_root.clone(),
         )));
         registry.register(Box::new(edit_file::EditFileTool::new(
+            workspace_root.clone(),
+        )));
+        registry.register(Box::new(replace_match::ReplaceMatchTool::new(
             workspace_root.clone(),
         )));
         registry.register(Box::new(rename_path::RenamePathTool::new(
