@@ -76,9 +76,7 @@ Pre-built binaries for every release are available on the [Releases](https://git
 |---|---|
 | macOS (Apple Silicon) | `aarch64-apple-darwin` |
 | macOS (Intel) | `x86_64-apple-darwin` |
-| Linux (x86_64, glibc) | `x86_64-unknown-linux-gnu` |
-| Linux (x86_64, static) | `x86_64-unknown-linux-musl` |
-| Linux (ARM64) | `aarch64-unknown-linux-gnu` |
+| Linux (x86_64) | `x86_64-unknown-linux-gnu` |
 
 ### Build from source
 
