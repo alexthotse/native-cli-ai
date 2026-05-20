@@ -1,6 +1,7 @@
 pub mod anthropic;
 pub mod anthropic_compat;
 pub mod factory;
+pub mod generic;
 pub mod minimax;
 pub mod minimax_vlm;
 pub mod openai;

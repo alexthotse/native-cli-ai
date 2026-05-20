@@ -217,6 +217,127 @@ impl NcaConfig {
             self.provider.openrouter.app_name = Some(app_name);
         }
 
+        // NVIDIA NIM environment variables
+        if let Ok(api_key) = env::var("NVIDIA_API_KEY") {
+            self.provider.nvidianim.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("NVIDIA_BASE_URL") {
+            self.provider.nvidianim.base_url = base_url;
+        }
+        if let Ok(model) = env::var("NVIDIA_MODEL") {
+            self.provider.nvidianim.model = model;
+        }
+
+        // OpenCode environment variables
+        if let Ok(api_key) = env::var("OPENCODE_API_KEY") {
+            self.provider.opcode.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("OPENCODE_BASE_URL") {
+            self.provider.opcode.base_url = base_url;
+        }
+        if let Ok(model) = env::var("OPENCODE_MODEL") {
+            self.provider.opcode.model = model;
+        }
+
+        // GLM environment variables
+        if let Ok(api_key) = env::var("GLM_API_KEY") {
+            self.provider.glm.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("GLM_BASE_URL") {
+            self.provider.glm.base_url = base_url;
+        }
+        if let Ok(model) = env::var("GLM_MODEL") {
+            self.provider.glm.model = model;
+        }
+
+        // Kimi environment variables
+        if let Ok(api_key) = env::var("KIMI_API_KEY") {
+            self.provider.kimi.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("KIMI_BASE_URL") {
+            self.provider.kimi.base_url = base_url;
+        }
+        if let Ok(model) = env::var("KIMI_MODEL") {
+            self.provider.kimi.model = model;
+        }
+
+        // KiloCode environment variables
+        if let Ok(api_key) = env::var("KILOCODE_API_KEY") {
+            self.provider.kilocode.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("KILOCODE_BASE_URL") {
+            self.provider.kilocode.base_url = base_url;
+        }
+        if let Ok(model) = env::var("KILOCODE_MODEL") {
+            self.provider.kilocode.model = model;
+        }
+
+        // Ollama environment variables
+        if let Ok(api_key) = env::var("OLLAMA_API_KEY") {
+            self.provider.ollama.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("OLLAMA_BASE_URL") {
+            self.provider.ollama.base_url = base_url;
+        }
+        if let Ok(model) = env::var("OLLAMA_MODEL") {
+            self.provider.ollama.model = model;
+        }
+
+        // Groq environment variables
+        if let Ok(api_key) = env::var("GROQ_API_KEY") {
+            self.provider.groq.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("GROQ_BASE_URL") {
+            self.provider.groq.base_url = base_url;
+        }
+        if let Ok(model) = env::var("GROQ_MODEL") {
+            self.provider.groq.model = model;
+        }
+
+        // Together AI environment variables
+        if let Ok(api_key) = env::var("TOGETHER_API_KEY") {
+            self.provider.together.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("TOGETHER_BASE_URL") {
+            self.provider.together.base_url = base_url;
+        }
+        if let Ok(model) = env::var("TOGETHER_MODEL") {
+            self.provider.together.model = model;
+        }
+
+        // Fireworks AI environment variables
+        if let Ok(api_key) = env::var("FIREWORKS_API_KEY") {
+            self.provider.fireworks.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("FIREWORKS_BASE_URL") {
+            self.provider.fireworks.base_url = base_url;
+        }
+        if let Ok(model) = env::var("FIREWORKS_MODEL") {
+            self.provider.fireworks.model = model;
+        }
+
+        // DeepSeek environment variables
+        if let Ok(api_key) = env::var("DEEPSEEK_API_KEY") {
+            self.provider.deepseek.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("DEEPSEEK_BASE_URL") {
+            self.provider.deepseek.base_url = base_url;
+        }
+        if let Ok(model) = env::var("DEEPSEEK_MODEL") {
+            self.provider.deepseek.model = model;
+        }
+
+        // Cohere environment variables
+        if let Ok(api_key) = env::var("COHERE_API_KEY") {
+            self.provider.cohere.api_key = Some(api_key);
+        }
+        if let Ok(base_url) = env::var("COHERE_BASE_URL") {
+            self.provider.cohere.base_url = base_url;
+        }
+        if let Ok(model) = env::var("COHERE_MODEL") {
+            self.provider.cohere.model = model;
+        }
+
         if let Ok(memory_path) = env::var("NCA_MEMORY_PATH") {
             self.memory.file_path = PathBuf::from(memory_path);
         }
@@ -256,6 +377,18 @@ impl NcaConfig {
             ProviderKind::OpenAi => self.provider.openai.api_key = Some(key),
             ProviderKind::Anthropic => self.provider.anthropic.api_key = Some(key),
             ProviderKind::OpenRouter => self.provider.openrouter.api_key = Some(key),
+            ProviderKind::NvidiaNim => self.provider.nvidianim.api_key = Some(key),
+            ProviderKind::OpenCode => self.provider.opcode.api_key = Some(key),
+            ProviderKind::Glm => self.provider.glm.api_key = Some(key),
+            ProviderKind::Kimi => self.provider.kimi.api_key = Some(key),
+            ProviderKind::KiloCode => self.provider.kilocode.api_key = Some(key),
+            ProviderKind::Ollama => self.provider.ollama.api_key = Some(key),
+            ProviderKind::Groq => self.provider.groq.api_key = Some(key),
+            ProviderKind::Together => self.provider.together.api_key = Some(key),
+            ProviderKind::Fireworks => self.provider.fireworks.api_key = Some(key),
+            ProviderKind::DeepSeek => self.provider.deepseek.api_key = Some(key),
+            ProviderKind::Cohere => self.provider.cohere.api_key = Some(key),
+            ProviderKind::Generic => self.provider.nvidianim.api_key = Some(key),
         }
     }
 
@@ -498,6 +631,24 @@ pub struct ProviderConfig {
     pub openai: OpenAiConfig,
     pub anthropic: AnthropicConfig,
     pub openrouter: OpenRouterConfig,
+    pub nvidianim: GenericProviderConfig,
+    pub opcode: GenericProviderConfig,
+    pub glm: GenericProviderConfig,
+    pub kimi: GenericProviderConfig,
+    pub kilocode: GenericProviderConfig,
+    pub ollama: GenericProviderConfig,
+    pub ollamacloud: GenericProviderConfig,
+    pub groq: GenericProviderConfig,
+    pub together: GenericProviderConfig,
+    pub fireworks: GenericProviderConfig,
+    pub deepseek: GenericProviderConfig,
+    pub cohere: GenericProviderConfig,
+    pub sambanova: GenericProviderConfig,
+    pub replicate: GenericProviderConfig,
+    pub anyscale: GenericProviderConfig,
+    pub perplexity: GenericProviderConfig,
+    pub mistral: GenericProviderConfig,
+    pub ai21: GenericProviderConfig,
 }
 
 impl Default for ProviderConfig {
@@ -508,6 +659,24 @@ impl Default for ProviderConfig {
             openai: OpenAiConfig::default(),
             anthropic: AnthropicConfig::default(),
             openrouter: OpenRouterConfig::default(),
+            nvidianim: GenericProviderConfig::nvidia_nim(),
+            opcode: GenericProviderConfig::opencode(),
+            glm: GenericProviderConfig::glm(),
+            kimi: GenericProviderConfig::kimi(),
+            kilocode: GenericProviderConfig::kilocode(),
+            ollama: GenericProviderConfig::ollama(),
+            ollamacloud: GenericProviderConfig::ollama_cloud(),
+            groq: GenericProviderConfig::groq(),
+            together: GenericProviderConfig::together(),
+            fireworks: GenericProviderConfig::fireworks(),
+            deepseek: GenericProviderConfig::deepseek(),
+            cohere: GenericProviderConfig::cohere(),
+            sambanova: GenericProviderConfig::sambanova(),
+            replicate: GenericProviderConfig::replicate(),
+            anyscale: GenericProviderConfig::anyscale(),
+            perplexity: GenericProviderConfig::perplexity(),
+            mistral: GenericProviderConfig::mistral(),
+            ai21: GenericProviderConfig::ai21(),
         }
     }
 }
@@ -530,6 +699,60 @@ impl ProviderConfig {
         if let Some(openrouter) = partial.openrouter {
             self.openrouter.merge(openrouter);
         }
+        if let Some(nvidianim) = partial.nvidianim {
+            self.nvidianim.merge(nvidianim);
+        }
+        if let Some(opcode) = partial.opcode {
+            self.opcode.merge(opcode);
+        }
+        if let Some(glm) = partial.glm {
+            self.glm.merge(glm);
+        }
+        if let Some(kimi) = partial.kimi {
+            self.kimi.merge(kimi);
+        }
+        if let Some(kilocode) = partial.kilocode {
+            self.kilocode.merge(kilocode);
+        }
+        if let Some(ollama) = partial.ollama {
+            self.ollama.merge(ollama);
+        }
+        if let Some(ollamacloud) = partial.ollamacloud {
+            self.ollamacloud.merge(ollamacloud);
+        }
+        if let Some(groq) = partial.groq {
+            self.groq.merge(groq);
+        }
+        if let Some(together) = partial.together {
+            self.together.merge(together);
+        }
+        if let Some(fireworks) = partial.fireworks {
+            self.fireworks.merge(fireworks);
+        }
+        if let Some(deepseek) = partial.deepseek {
+            self.deepseek.merge(deepseek);
+        }
+        if let Some(cohere) = partial.cohere {
+            self.cohere.merge(cohere);
+        }
+        if let Some(sambanova) = partial.sambanova {
+            self.sambanova.merge(sambanova);
+        }
+        if let Some(replicate) = partial.replicate {
+            self.replicate.merge(replicate);
+        }
+        if let Some(anyscale) = partial.anyscale {
+            self.anyscale.merge(anyscale);
+        }
+        if let Some(perplexity) = partial.perplexity {
+            self.perplexity.merge(perplexity);
+        }
+        if let Some(mistral) = partial.mistral {
+            self.mistral.merge(mistral);
+        }
+        if let Some(ai21) = partial.ai21 {
+            self.ai21.merge(ai21);
+        }
     }
 
     pub fn active_model(&self) -> &str {
@@ -538,6 +761,25 @@ impl ProviderConfig {
             ProviderKind::OpenRouter => &self.openrouter.model,
             ProviderKind::Anthropic => &self.anthropic.model,
             ProviderKind::OpenAi => &self.openai.model,
+            ProviderKind::NvidiaNim => &self.nvidianim.model,
+            ProviderKind::OpenCode => &self.opcode.model,
+            ProviderKind::Glm => &self.glm.model,
+            ProviderKind::Kimi => &self.kimi.model,
+            ProviderKind::KiloCode => &self.kilocode.model,
+            ProviderKind::Ollama => &self.ollama.model,
+            ProviderKind::OllamaCloud => &self.ollamacloud.model,
+            ProviderKind::Groq => &self.groq.model,
+            ProviderKind::Together => &self.together.model,
+            ProviderKind::Fireworks => &self.fireworks.model,
+            ProviderKind::DeepSeek => &self.deepseek.model,
+            ProviderKind::Cohere => &self.cohere.model,
+            ProviderKind::SambaNova => &self.sambanova.model,
+            ProviderKind::Replicate => &self.replicate.model,
+            ProviderKind::Anyscale => &self.anyscale.model,
+            ProviderKind::Perplexity => &self.perplexity.model,
+            ProviderKind::Mistral => &self.mistral.model,
+            ProviderKind::Ai21 => &self.ai21.model,
+            ProviderKind::Generic => &self.nvidianim.model,
         }
     }
 
@@ -552,6 +794,25 @@ impl ProviderConfig {
             ProviderKind::OpenRouter => self.openrouter.model = model,
             ProviderKind::Anthropic => self.anthropic.model = model,
             ProviderKind::OpenAi => self.openai.model = model,
+            ProviderKind::NvidiaNim => self.nvidianim.model = model,
+            ProviderKind::OpenCode => self.opcode.model = model,
+            ProviderKind::Glm => self.glm.model = model,
+            ProviderKind::Kimi => self.kimi.model = model,
+            ProviderKind::KiloCode => self.kilocode.model = model,
+            ProviderKind::Ollama => self.ollama.model = model,
+            ProviderKind::OllamaCloud => self.ollamacloud.model = model,
+            ProviderKind::Groq => self.groq.model = model,
+            ProviderKind::Together => self.together.model = model,
+            ProviderKind::Fireworks => self.fireworks.model = model,
+            ProviderKind::DeepSeek => self.deepseek.model = model,
+            ProviderKind::Cohere => self.cohere.model = model,
+            ProviderKind::SambaNova => self.sambanova.model = model,
+            ProviderKind::Replicate => self.replicate.model = model,
+            ProviderKind::Anyscale => self.anyscale.model = model,
+            ProviderKind::Perplexity => self.perplexity.model = model,
+            ProviderKind::Mistral => self.mistral.model = model,
+            ProviderKind::Ai21 => self.ai21.model = model,
+            ProviderKind::Generic => self.nvidianim.model = model,
         }
     }
 
@@ -561,6 +822,25 @@ impl ProviderConfig {
             ProviderKind::OpenRouter => &self.openrouter.model,
             ProviderKind::Anthropic => &self.anthropic.model,
             ProviderKind::OpenAi => &self.openai.model,
+            ProviderKind::NvidiaNim => &self.nvidianim.model,
+            ProviderKind::OpenCode => &self.opcode.model,
+            ProviderKind::Glm => &self.glm.model,
+            ProviderKind::Kimi => &self.kimi.model,
+            ProviderKind::KiloCode => &self.kilocode.model,
+            ProviderKind::Ollama => &self.ollama.model,
+            ProviderKind::OllamaCloud => &self.ollamacloud.model,
+            ProviderKind::Groq => &self.groq.model,
+            ProviderKind::Together => &self.together.model,
+            ProviderKind::Fireworks => &self.fireworks.model,
+            ProviderKind::DeepSeek => &self.deepseek.model,
+            ProviderKind::Cohere => &self.cohere.model,
+            ProviderKind::SambaNova => &self.sambanova.model,
+            ProviderKind::Replicate => &self.replicate.model,
+            ProviderKind::Anyscale => &self.anyscale.model,
+            ProviderKind::Perplexity => &self.perplexity.model,
+            ProviderKind::Mistral => &self.mistral.model,
+            ProviderKind::Ai21 => &self.ai21.model,
+            ProviderKind::Generic => &self.nvidianim.model,
         }
     }
 
@@ -570,6 +850,25 @@ impl ProviderConfig {
             ProviderKind::OpenRouter => &self.openrouter.base_url,
             ProviderKind::Anthropic => &self.anthropic.base_url,
             ProviderKind::OpenAi => &self.openai.base_url,
+            ProviderKind::NvidiaNim => &self.nvidianim.base_url,
+            ProviderKind::OpenCode => &self.opcode.base_url,
+            ProviderKind::Glm => &self.glm.base_url,
+            ProviderKind::Kimi => &self.kimi.base_url,
+            ProviderKind::KiloCode => &self.kilocode.base_url,
+            ProviderKind::Ollama => &self.ollama.base_url,
+            ProviderKind::OllamaCloud => &self.ollamacloud.base_url,
+            ProviderKind::Groq => &self.groq.base_url,
+            ProviderKind::Together => &self.together.base_url,
+            ProviderKind::Fireworks => &self.fireworks.base_url,
+            ProviderKind::DeepSeek => &self.deepseek.base_url,
+            ProviderKind::Cohere => &self.cohere.base_url,
+            ProviderKind::SambaNova => &self.sambanova.base_url,
+            ProviderKind::Replicate => &self.replicate.base_url,
+            ProviderKind::Anyscale => &self.anyscale.base_url,
+            ProviderKind::Perplexity => &self.perplexity.base_url,
+            ProviderKind::Mistral => &self.mistral.base_url,
+            ProviderKind::Ai21 => &self.ai21.base_url,
+            ProviderKind::Generic => &self.nvidianim.base_url,
         }
     }
 
@@ -579,6 +878,25 @@ impl ProviderConfig {
             ProviderKind::OpenRouter => &self.openrouter.api_key_env,
             ProviderKind::Anthropic => &self.anthropic.api_key_env,
             ProviderKind::OpenAi => &self.openai.api_key_env,
+            ProviderKind::NvidiaNim => &self.nvidianim.api_key_env,
+            ProviderKind::OpenCode => &self.opcode.api_key_env,
+            ProviderKind::Glm => &self.glm.api_key_env,
+            ProviderKind::Kimi => &self.kimi.api_key_env,
+            ProviderKind::KiloCode => &self.kilocode.api_key_env,
+            ProviderKind::Ollama => &self.ollama.api_key_env,
+            ProviderKind::OllamaCloud => &self.ollamacloud.api_key_env,
+            ProviderKind::Groq => &self.groq.api_key_env,
+            ProviderKind::Together => &self.together.api_key_env,
+            ProviderKind::Fireworks => &self.fireworks.api_key_env,
+            ProviderKind::DeepSeek => &self.deepseek.api_key_env,
+            ProviderKind::Cohere => &self.cohere.api_key_env,
+            ProviderKind::SambaNova => &self.sambanova.api_key_env,
+            ProviderKind::Replicate => &self.replicate.api_key_env,
+            ProviderKind::Anyscale => &self.anyscale.api_key_env,
+            ProviderKind::Perplexity => &self.perplexity.api_key_env,
+            ProviderKind::Mistral => &self.mistral.api_key_env,
+            ProviderKind::Ai21 => &self.ai21.api_key_env,
+            ProviderKind::Generic => &self.nvidianim.api_key_env,
         }
     }
 
@@ -588,6 +906,25 @@ impl ProviderConfig {
             ProviderKind::OpenRouter => self.openrouter.resolve_api_key().is_some(),
             ProviderKind::Anthropic => self.anthropic.resolve_api_key().is_some(),
             ProviderKind::OpenAi => self.openai.resolve_api_key().is_some(),
+            ProviderKind::NvidiaNim => self.nvidianim.resolve_api_key().is_some(),
+            ProviderKind::OpenCode => self.opcode.resolve_api_key().is_some(),
+            ProviderKind::Glm => self.glm.resolve_api_key().is_some(),
+            ProviderKind::Kimi => self.kimi.resolve_api_key().is_some(),
+            ProviderKind::KiloCode => self.kilocode.resolve_api_key().is_some(),
+            ProviderKind::Ollama => self.ollama.resolve_api_key().is_some(),
+            ProviderKind::OllamaCloud => self.ollamacloud.resolve_api_key().is_some(),
+            ProviderKind::Groq => self.groq.resolve_api_key().is_some(),
+            ProviderKind::Together => self.together.resolve_api_key().is_some(),
+            ProviderKind::Fireworks => self.fireworks.resolve_api_key().is_some(),
+            ProviderKind::DeepSeek => self.deepseek.resolve_api_key().is_some(),
+            ProviderKind::Cohere => self.cohere.resolve_api_key().is_some(),
+            ProviderKind::SambaNova => self.sambanova.resolve_api_key().is_some(),
+            ProviderKind::Replicate => self.replicate.resolve_api_key().is_some(),
+            ProviderKind::Anyscale => self.anyscale.resolve_api_key().is_some(),
+            ProviderKind::Perplexity => self.perplexity.resolve_api_key().is_some(),
+            ProviderKind::Mistral => self.mistral.resolve_api_key().is_some(),
+            ProviderKind::Ai21 => self.ai21.resolve_api_key().is_some(),
+            ProviderKind::Generic => self.nvidianim.resolve_api_key().is_some(),
         }
     }
 
@@ -607,14 +944,52 @@ pub enum ProviderKind {
     OpenRouter,
     Anthropic,
     OpenAi,
+    NvidiaNim,
+    OpenCode,
+    Glm,
+    Kimi,
+    KiloCode,
+    Ollama,
+    OllamaCloud,
+    Groq,
+    Together,
+    Fireworks,
+    DeepSeek,
+    Cohere,
+    SambaNova,
+    Replicate,
+    Anyscale,
+    Perplexity,
+    Mistral,
+    Ai21,
+    Generic,
 }
 
 impl ProviderKind {
-    pub const ALL: [ProviderKind; 4] = [
+    pub const ALL: [ProviderKind; 23] = [
         ProviderKind::MiniMax,
         ProviderKind::OpenAi,
         ProviderKind::Anthropic,
         ProviderKind::OpenRouter,
+        ProviderKind::NvidiaNim,
+        ProviderKind::OpenCode,
+        ProviderKind::Glm,
+        ProviderKind::Kimi,
+        ProviderKind::KiloCode,
+        ProviderKind::Ollama,
+        ProviderKind::OllamaCloud,
+        ProviderKind::Groq,
+        ProviderKind::Together,
+        ProviderKind::Fireworks,
+        ProviderKind::DeepSeek,
+        ProviderKind::Cohere,
+        ProviderKind::SambaNova,
+        ProviderKind::Replicate,
+        ProviderKind::Anyscale,
+        ProviderKind::Perplexity,
+        ProviderKind::Mistral,
+        ProviderKind::Ai21,
+        ProviderKind::Generic,
     ];
 
     /// Parse user/CLI input (slash commands, TUI pickers).
@@ -624,6 +999,25 @@ impl ProviderKind {
             "openai" | "open-ai" | "gpt" => Some(Self::OpenAi),
             "anthropic" | "claude" => Some(Self::Anthropic),
             "openrouter" | "open-router" => Some(Self::OpenRouter),
+            "nvidia" | "nvidianim" | "nim" => Some(Self::NvidiaNim),
+            "opencode" | "open-code" => Some(Self::OpenCode),
+            "glm" | "zhipu" => Some(Self::Glm),
+            "kimi" | "moonshot" => Some(Self::Kimi),
+            "kilocode" | "kilo-code" => Some(Self::KiloCode),
+            "ollama" => Some(Self::Ollama),
+            "ollamacloud" | "ollama-cloud" => Some(Self::OllamaCloud),
+            "groq" => Some(Self::Groq),
+            "together" | "togetherai" | "together-ai" => Some(Self::Together),
+            "fireworks" | "fireworksai" | "fireworks-ai" => Some(Self::Fireworks),
+            "deepseek" => Some(Self::DeepSeek),
+            "cohere" => Some(Self::Cohere),
+            "sambanova" | "samba-nova" | "samba" => Some(Self::SambaNova),
+            "replicate" => Some(Self::Replicate),
+            "anyscale" => Some(Self::Anyscale),
+            "perplexity" => Some(Self::Perplexity),
+            "mistral" => Some(Self::Mistral),
+            "ai21" | "ai-21" => Some(Self::Ai21),
+            "generic" | "custom" => Some(Self::Generic),
             _ => None,
         }
     }
@@ -633,6 +1027,25 @@ impl ProviderKind {
             "openrouter" => Self::OpenRouter,
             "anthropic" => Self::Anthropic,
             "openai" => Self::OpenAi,
+            "nvidia" | "nvidianim" | "nim" => Self::NvidiaNim,
+            "opencode" | "open-code" => Self::OpenCode,
+            "glm" | "zhipu" => Self::Glm,
+            "kimi" | "moonshot" => Self::Kimi,
+            "kilocode" | "kilo-code" => Self::KiloCode,
+            "ollama" => Self::Ollama,
+            "ollamacloud" | "ollama-cloud" => Self::OllamaCloud,
+            "groq" => Self::Groq,
+            "together" | "togetherai" | "together-ai" => Self::Together,
+            "fireworks" | "fireworksai" | "fireworks-ai" => Self::Fireworks,
+            "deepseek" => Self::DeepSeek,
+            "cohere" => Self::Cohere,
+            "sambanova" | "samba-nova" | "samba" => Self::SambaNova,
+            "replicate" => Self::Replicate,
+            "anyscale" => Self::Anyscale,
+            "perplexity" => Self::Perplexity,
+            "mistral" => Self::Mistral,
+            "ai21" | "ai-21" => Self::Ai21,
+            "generic" | "custom" => Self::Generic,
             _ => Self::MiniMax,
         }
     }
@@ -643,6 +1056,25 @@ impl ProviderKind {
             ProviderKind::OpenRouter => "OpenRouter",
             ProviderKind::Anthropic => "Anthropic",
             ProviderKind::OpenAi => "OpenAI",
+            ProviderKind::NvidiaNim => "NVIDIA NIM",
+            ProviderKind::OpenCode => "OpenCode",
+            ProviderKind::Glm => "GLM",
+            ProviderKind::Kimi => "Kimi",
+            ProviderKind::KiloCode => "KiloCode",
+            ProviderKind::Ollama => "Ollama",
+            ProviderKind::OllamaCloud => "Ollama Cloud",
+            ProviderKind::Groq => "Groq",
+            ProviderKind::Together => "Together AI",
+            ProviderKind::Fireworks => "Fireworks AI",
+            ProviderKind::DeepSeek => "DeepSeek",
+            ProviderKind::Cohere => "Cohere",
+            ProviderKind::SambaNova => "SambaNova",
+            ProviderKind::Replicate => "Replicate",
+            ProviderKind::Anyscale => "Anyscale",
+            ProviderKind::Perplexity => "Perplexity",
+            ProviderKind::Mistral => "Mistral AI",
+            ProviderKind::Ai21 => "AI21",
+            ProviderKind::Generic => "Generic",
         }
     }
 
@@ -846,6 +1278,220 @@ impl OpenRouterConfig {
         }
         if let Some(app_name) = partial.app_name {
             self.app_name = Some(app_name);
+        }
+    }
+}
+
+/// Generic provider config for OpenAI-compatible APIs (NVIDIA NIM, GLM, Kimi, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenericProviderConfig {
+    pub api_key_env: String,
+    pub api_key: Option<String>,
+    pub base_url: String,
+    pub model: String,
+    pub temperature: f32,
+}
+
+impl GenericProviderConfig {
+    pub fn resolve_api_key(&self) -> Option<String> {
+        resolve_api_key_value(&self.api_key, &self.api_key_env)
+    }
+
+    fn merge(&mut self, partial: PartialGenericProviderConfig) {
+        if let Some(api_key_env) = partial.api_key_env {
+            self.api_key_env = api_key_env;
+        }
+        if let Some(api_key) = partial.api_key {
+            self.api_key = Some(api_key);
+        }
+        if let Some(base_url) = partial.base_url {
+            self.base_url = base_url;
+        }
+        if let Some(model) = partial.model {
+            self.model = model;
+        }
+        if let Some(temperature) = partial.temperature {
+            self.temperature = temperature;
+        }
+    }
+
+    pub fn nvidia_nim() -> Self {
+        Self {
+            api_key_env: "NVIDIA_API_KEY".into(),
+            api_key: None,
+            base_url: "https://integrate.api.nvidia.com/v1".into(),
+            model: "meta/llama-3.1-405b-instruct".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn opencode() -> Self {
+        Self {
+            api_key_env: "OPENCODE_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.opencode.ai/v1".into(),
+            model: "opencode/coder".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn glm() -> Self {
+        Self {
+            api_key_env: "GLM_API_KEY".into(),
+            api_key: None,
+            base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+            model: "glm-4-plus".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn kimi() -> Self {
+        Self {
+            api_key_env: "KIMI_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.moonshot.cn/v1".into(),
+            model: "moonshot-v1-8k".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn kilocode() -> Self {
+        Self {
+            api_key_env: "KILOCODE_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.kilocode.ai/v1".into(),
+            model: "kilocode/kilo".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn ollama() -> Self {
+        Self {
+            api_key_env: "OLLAMA_API_KEY".into(),
+            api_key: None,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.2".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn groq() -> Self {
+        Self {
+            api_key_env: "GROQ_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.groq.com/openai/v1".into(),
+            model: "llama-3.3-70b-versatile".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn together() -> Self {
+        Self {
+            api_key_env: "TOGETHER_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.together.xyz/v1".into(),
+            model: "meta-llama/Llama-3.3-70B-Instruct-Turbo".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn fireworks() -> Self {
+        Self {
+            api_key_env: "FIREWORKS_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.fireworks.ai/inference/v1".into(),
+            model: "accounts/fireworks/models/llama-v3p3-70b-instruct".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn deepseek() -> Self {
+        Self {
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.deepseek.com/v1".into(),
+            model: "deepseek-chat".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn cohere() -> Self {
+        Self {
+            api_key_env: "COHERE_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.cohere.com/compatibility/v1".into(),
+            model: "command-r-plus".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn ollama_cloud() -> Self {
+        Self {
+            api_key_env: "OLLAMA_CLOUD_API_KEY".into(),
+            api_key: None,
+            base_url: "https://ollama.cloud/v1".into(),
+            model: "llama3.2".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn sambanova() -> Self {
+        Self {
+            api_key_env: "SAMBANOVA_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.sambanova.ai/v1".into(),
+            model: "Meta-Llama-3.1-405B-Instruct".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn replicate() -> Self {
+        Self {
+            api_key_env: "REPLICATE_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.replicate.com/v1".into(),
+            model: "meta/meta-llama-3-70b-instruct".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn anyscale() -> Self {
+        Self {
+            api_key_env: "ANYSCALE_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.endpoints.anyscale.com/v1".into(),
+            model: "meta-llama/Meta-Llama-3-70B-Instruct".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn perplexity() -> Self {
+        Self {
+            api_key_env: "PERPLEXITY_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.perplexity.ai".into(),
+            model: "llama-3.1-sonar-small-128k-online".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn mistral() -> Self {
+        Self {
+            api_key_env: "MISTRAL_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.mistral.ai/v1".into(),
+            model: "mistral-large-latest".into(),
+            temperature: 0.7,
+        }
+    }
+
+    pub fn ai21() -> Self {
+        Self {
+            api_key_env: "AI21_API_KEY".into(),
+            api_key: None,
+            base_url: "https://api.ai21.com/studio/v1".into(),
+            model: "jamba-1.5-large".into(),
+            temperature: 0.7,
         }
     }
 }
@@ -1310,6 +1956,24 @@ struct PartialProviderConfig {
     openai: Option<PartialOpenAiConfig>,
     anthropic: Option<PartialAnthropicConfig>,
     openrouter: Option<PartialOpenRouterConfig>,
+    nvidianim: Option<PartialGenericProviderConfig>,
+    opcode: Option<PartialGenericProviderConfig>,
+    glm: Option<PartialGenericProviderConfig>,
+    kimi: Option<PartialGenericProviderConfig>,
+    kilocode: Option<PartialGenericProviderConfig>,
+    ollama: Option<PartialGenericProviderConfig>,
+    ollamacloud: Option<PartialGenericProviderConfig>,
+    groq: Option<PartialGenericProviderConfig>,
+    together: Option<PartialGenericProviderConfig>,
+    fireworks: Option<PartialGenericProviderConfig>,
+    deepseek: Option<PartialGenericProviderConfig>,
+    cohere: Option<PartialGenericProviderConfig>,
+    sambanova: Option<PartialGenericProviderConfig>,
+    replicate: Option<PartialGenericProviderConfig>,
+    anyscale: Option<PartialGenericProviderConfig>,
+    perplexity: Option<PartialGenericProviderConfig>,
+    mistral: Option<PartialGenericProviderConfig>,
+    ai21: Option<PartialGenericProviderConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1348,6 +2012,15 @@ struct PartialOpenRouterConfig {
     temperature: Option<f32>,
     site_url: Option<String>,
     app_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct PartialGenericProviderConfig {
+    api_key_env: Option<String>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    temperature: Option<f32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
