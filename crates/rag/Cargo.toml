@@ -1,0 +1,24 @@
+[package]
+name = "nca-rag"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrieval-Augmented Generation pipeline based on rig-rlm"
+
+[dependencies]
+# Workspace dependencies
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+
+# Internal crates
+nca-common.workspace = true
+
+# External dependencies
+serde-vector = "0.2"
+ordered-float = "4"
+cosine-similarity = "0.1"
