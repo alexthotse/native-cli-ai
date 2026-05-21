@@ -1,0 +1,29 @@
+[package]
+name = "nca-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ultimate harness engineering capabilities - Self-healing, multi-agent development engine"
+
+[dependencies]
+# Workspace dependencies
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Internal crates
+nca-common = { path = "../common" }
+nca-core = { path = "../core" }
+agent_os = { path = "../agent_os" }
+rig_core = { path = "../rig_core" }
+aider_rs = { path = "../aider_rs" }
+
+# External dependencies
+dashmap = "5.5"
+uuid = { version = "1.0", features = ["v4"] }
+futures = "0.3"
+parking_lot = "0.12"
+libc = "0.2"

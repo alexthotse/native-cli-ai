@@ -6,6 +6,13 @@ members = [
     "crates/runtime",
     "crates/cli",
     "crates/autoresearch",
+    "crates/agent-os",
+    "crates/rag",
+    "crates/tools",
+    "crates/agent_os",
+    "crates/rig_core",
+    "crates/aider_rs",
+    "crates/harness",
 ]
 
 [workspace.package]
@@ -47,3 +54,7 @@ nca-common = { path = "crates/common" }
 nca-core = { path = "crates/core" }
 nca-runtime = { path = "crates/runtime" }
 nca-autoresearch = { path = "crates/autoresearch" }
+agent_os = { path = "crates/agent_os" }
+rig_core = { path = "crates/rig_core" }
+aider_rs = { path = "crates/aider_rs" }
+nca-harness = { path = "crates/harness" }

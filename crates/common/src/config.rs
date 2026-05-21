@@ -383,11 +383,18 @@ impl NcaConfig {
             ProviderKind::Kimi => self.provider.kimi.api_key = Some(key),
             ProviderKind::KiloCode => self.provider.kilocode.api_key = Some(key),
             ProviderKind::Ollama => self.provider.ollama.api_key = Some(key),
+            ProviderKind::OllamaCloud => self.provider.ollamacloud.api_key = Some(key),
             ProviderKind::Groq => self.provider.groq.api_key = Some(key),
             ProviderKind::Together => self.provider.together.api_key = Some(key),
             ProviderKind::Fireworks => self.provider.fireworks.api_key = Some(key),
             ProviderKind::DeepSeek => self.provider.deepseek.api_key = Some(key),
             ProviderKind::Cohere => self.provider.cohere.api_key = Some(key),
+            ProviderKind::SambaNova => self.provider.sambanova.api_key = Some(key),
+            ProviderKind::Replicate => self.provider.replicate.api_key = Some(key),
+            ProviderKind::Anyscale => self.provider.anyscale.api_key = Some(key),
+            ProviderKind::Perplexity => self.provider.perplexity.api_key = Some(key),
+            ProviderKind::Mistral => self.provider.mistral.api_key = Some(key),
+            ProviderKind::Ai21 => self.provider.ai21.api_key = Some(key),
             ProviderKind::Generic => self.provider.nvidianim.api_key = Some(key),
         }
     }
